@@ -1,0 +1,5 @@
+# Private working notes (Chinese): research plan, roadmap, Q&A, progress report
+docs/
+
+# Local Claude Code settings
+.claude/

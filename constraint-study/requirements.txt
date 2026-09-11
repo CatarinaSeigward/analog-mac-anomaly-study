@@ -1,0 +1,45 @@
+# ---------------------------------------------------------------------------
+# Day 0-1 base environment.
+#
+# NOTE: keep this file pure ASCII. Older pip versions decode requirements files
+# with the system locale codec (cp1252 / cp936 on Windows) instead of UTF-8, so
+# non-ASCII comments raise UnicodeDecodeError. Setup notes: ../README.md.
+#
+# CUDA users: install torch FIRST from the PyTorch index. A plain
+# `pip install torch` on Windows pulls the CPU-only build.
+#     pip install torch --index-url https://download.pytorch.org/whl/cu126
+# Current cuXXX tag: https://pytorch.org/get-started/locally/
+# Verify with scripts/check_env.py (torch.cuda.is_available() must be True).
+#
+# aihwkit is not needed: the study uses its own analog model (src/models/analog.py).
+# ---------------------------------------------------------------------------
+
+# --- numerics ---
+numpy>=1.26
+scipy>=1.11
+
+# --- deep learning ---
+torch>=2.6
+
+# --- audio features (must match MLPerf Tiny / DCASE2020 reference) ---
+librosa>=0.10.2        # reference uses librosa.feature.melspectrogram
+soundfile>=0.12
+numba>=0.61            # librosa dependency; 0.61+ required for Python 3.13
+
+# --- evaluation ---
+scikit-learn>=1.4      # roc_auc_score(max_fpr=0.1) for pAUC
+
+# --- config / experiment orchestration ---
+omegaconf>=2.3
+pyyaml>=6.0
+
+# --- reporting ---
+matplotlib>=3.8
+pandas>=2.2
+
+# --- tooling ---
+tqdm>=4.66
+pytest>=8.0
+
+# --- dataset download (Kaggle mirror if Zenodo is unreachable; see ../README.md, Data) ---
+kaggle>=1.6

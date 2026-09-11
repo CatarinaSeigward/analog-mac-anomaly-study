@@ -1,0 +1,66 @@
+# ============================================================================
+# fast 配置：用于 Day 2-4 的扫描
+#
+# 与 configs/baseline.yaml 的差异只在 train 段。特征、模型、评估完全一致。
+#
+# 依据（来自 C0 的收敛曲线）：
+#   - val loss 从 ep30 到 ep100 只改善 1.04%，后 70 个 epoch 基本是浪费
+#   - batch=512 是官方给 2021 年 Keras 基线定的，对现代 GPU 太小，
+#     2.38M 窗口跑出 465K 步，每步仅 4ms，GPU 在等调度而不是在算
+#   - 相邻窗口重叠 4/5 帧，信息高度冗余，抽稀损失很小
+#
+# ★ 这份配置必须先通过等价性验证才能用于扫描：
+#     python -m src.evaluate --config configs/fast.yaml --compare c0_baseline
+#   判据 |dAUC| < 0.01。验证结果要写进 app note 的 Method 一节。
+# ============================================================================
+
+name: c0_fast80
+
+seed: 0
+
+data:
+  root: ./data
+  machine: ToyCar
+  train_dirs:
+    - dc2020task2/train
+    - dc2020task2added/train
+  test_dirs:
+    - dc2020task2/test
+  per_machine_model: false
+  cache_dir: ./cache
+
+feature:
+  n_mels: 128
+  frames: 5
+  n_fft: 1024
+  hop_length: 512
+  power: 2.0
+  backend: librosa
+
+model:
+  hidden: 128
+  n_blocks: 4
+  bottleneck: 8
+
+train:
+  epochs: 80            # 100 -> 80（40 epoch 时 pAUC 偏差 -0.019 过大，见 README 验证表）
+  batch_size: 2048      # 512 -> 2048
+  optimizer: adam
+  lr: 0.002             # 随 batch 放大（线性缩放规则的保守版本）
+  validation_split: 0.1
+  shuffle: true
+  window_stride: 2      # 1 -> 2，训练窗口减半；评估恒为 stride=1
+  store_device: auto    # 8GB 笔记本 GPU 上 1.15GB 缓存放不进去，auto 会自动放 CPU
+  gpu_limit_gb: 0.5
+
+eval:
+  max_fpr: 0.1
+  machine_ids: [1, 2, 3, 4]
+
+report:
+  n_chips: 1
+  n_seeds: 1
+  n_trials: 1
+
+output:
+  results_dir: ./results

@@ -1,0 +1,66 @@
+# ============================================================================
+# C0：MLPerf Tiny 异常检测官方参考配置
+#
+# 特征与训练超参逐项对齐 mlcommons/tiny 的 baseline.yaml，
+# 目的是先复现官方数字（AUC 0.800914 / pAUC 0.672218），建立信用锚点。
+# Day 2 之后的压缩配置都从这份继承并覆盖。
+# ============================================================================
+
+name: c0_baseline
+
+seed: 0
+
+data:
+  root: ./data
+  machine: ToyCar
+  # Kaggle 镜像解压后的实际路径（两个包都是 ToyCar-only，无需重排目录）
+  train_dirs:
+    - dc2020task2/train          # ID 01-04, 4000 normal
+    - dc2020task2added/train     # ID 05-07, 3000 normal
+  test_dirs:
+    - dc2020task2/test           # ID 01-04, 1400 normal + 1059 anomaly
+  # ★ MLPerf Tiny 训练单一模型（非每个 machine ID 一个），见 根目录 README.md 的 Data 一节
+  per_machine_model: false
+  cache_dir: ./cache
+
+feature:
+  # 与官方 baseline.yaml 完全一致
+  n_mels: 128
+  frames: 5           # 滑窗帧数 → 输入维度 = n_mels * frames = 640
+  n_fft: 1024
+  hop_length: 512
+  power: 2.0
+  backend: librosa    # librosa | torchaudio（torchaudio 为近似匹配，见 features/logmel.py）
+
+model:
+  # DCASE2020 / MLPerf Tiny 基线自编码器
+  # 640 -> [128]x4 -> 8 -> [128]x4 -> 640
+  hidden: 128
+  n_blocks: 4         # 编码器和解码器各 n_blocks 层
+  bottleneck: 8
+
+train:
+  epochs: 100
+  batch_size: 512
+  optimizer: adam
+  lr: 0.001
+  validation_split: 0.1
+  shuffle: true
+  window_stride: 1      # 1 = 用全部窗口（官方配置）。fast 配置里会调大
+  store_device: auto    # auto|cuda|cpu，log-mel 缓存放哪，见 WindowStore
+  gpu_limit_gb: 0.5     # auto 模式下超过这个大小就放 CPU
+
+eval:
+  max_fpr: 0.1        # pAUC 的 FPR 上限，与官方一致
+  # 评估时只看这些 machine ID（dev/test 里有标签的）
+  machine_ids: [1, 2, 3, 4]
+
+# 统计报告（见 PLAN 附录 H）。Day 1 只需 1 芯片 1 种子；
+# Day 3 开始必须提到 n_chips=10, n_seeds=3。
+report:
+  n_chips: 1
+  n_seeds: 1
+  n_trials: 1
+
+output:
+  results_dir: ./results

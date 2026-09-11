@@ -1,0 +1,14 @@
+# ---------------------------------------------------------------------------
+# OPTIONAL -- not used by this study.
+#
+# The study implements its own behavioural model of the analog array
+# (src/models/analog.py) and never needed IBM aihwkit. This file is kept only
+# for anyone who wants to cross-check against aihwkit's device models.
+#
+# aihwkit is a C++/CUDA extension, officially supported on Linux/macOS;
+# on Windows use WSL2 or Colab.
+#
+#     pip install -r requirements.txt -r requirements-analog.txt
+# ---------------------------------------------------------------------------
+
+aihwkit>=0.9
