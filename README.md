@@ -9,9 +9,8 @@ device mismatch, weight-programming error, signal-path noise, and different plac
 converters — and measures what each hardware constraint costs.
 
 > **Simulation only — nothing here has been verified on silicon.** The hardware constraints are taken
-> from publicly available test-chip specifications of Ai Linear's analog inference IP; this is an
-> independent study, not affiliated with or endorsed by Ai Linear. Every modelling assumption is listed
-> in [assumptions.md](assumptions.md).
+> from published test-chip specifications for analog in-memory inference. Every modelling assumption is
+> listed in [assumptions.md](assumptions.md).
 
 ## Results at a glance
 
@@ -23,8 +22,8 @@ Metric: AUC, mean ± std over training seeds × 10 simulated chips.
 | 1 | A 6-tile model is viable on the simulated analog array | 0.729 ± 0.012 on analog hardware vs 0.720–0.727 in fp32; ≈ 80 % of the above-chance discrimination of the 380-tile reference (0.785) |
 | 2 | Spend the 30-dimensional input budget on time, not frequency | 6 bands × 5 frames beats 30 bands × 1 frame by +0.068 (t = 4.2) |
 | 3 | Programming error up to 3 % is nearly free — with hardware-aware training | 0.718–0.728 at σ_prog ≤ 3 %; without it, chips worse than random appear from 1 % |
-| 4 | Removing inter-layer A/D costs ≤ 0.01 while signal-path noise stays below ≈ 0.5 LSB | Paired difference +0.003 / −0.010 at 0.24 / 0.47 LSB; both architectures fail at ≈ 1 LSB |
-| 5 | The no-inter-layer-A/D architecture needs activation noise during training | 0.665 → 0.738 on a quiet chip |
+| 4 | Removing inter-layer A/D costs ≤ 0.01 while signal-path noise stays below ≈ 0.5 LSB — an accuracy budget for the signal path | Paired difference +0.003 / −0.010 at 0.24 / 0.47 LSB; both architectures fail at ≈ 1 LSB |
+| 5 | The no-inter-layer-A/D architecture needs activation noise during training, and per-chip calibration is no substitute | 0.665 → 0.738 on a quiet chip; 11 min of per-chip calibration recovers 0.022 of a 0.083 gap |
 | 6 | 6-bit W/S/B is sufficient; 4-bit collapses | 6 / 8 / 10 bits: 0.729 / 0.727 / 0.727; 4 bits: 0.449 |
 
 ![Figure 2](constraint-study/results/figures/fig2_noise.png)
@@ -32,8 +31,8 @@ Metric: AUC, mean ± std over training seeds × 10 simulated chips.
 *Hardware-aware training (blue) keeps AUC close to fp32 as weight-programming error grows; without it
 (red), the worst simulated chip falls below random guessing.*
 
-The method, all four figures, per-condition tables, chip-design implications and limitations are in
-**[REPORT.md](REPORT.md)**.
+The method, all four figures, per-condition tables, the chip-design implications, the draft handoff
+interface between the ML and hardware sides, and the limitations are in **[REPORT.md](REPORT.md)**.
 
 ## Repository layout
 

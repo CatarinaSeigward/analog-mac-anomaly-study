@@ -1,6 +1,6 @@
 # Assumptions
 
-Last reviewed: 11 September 2026, after all experiments in [REPORT.md](REPORT.md).
+Last reviewed: 12 September 2026, after all experiments in [REPORT.md](REPORT.md).
 
 This is a **simulation study**; nothing has been verified on silicon. Target-hardware parameters are
 inferred from publicly available material or taken from the literature. Every assumption is listed
@@ -15,7 +15,7 @@ Identifiers are kept stable across revisions, so they are not sequential within 
 
 | # | Assumption | Basis | Status |
 |---|---|---|---|
-| **A1** | Weight array 30 × 30; W / S / B 6-bit each | Public NN-IC test-chip specification | ⚠️ The specification is marked *"Work in Progress (Testing forthcoming)"*, 4Q24; the taped-out chip may differ. Array size and bit widths are parameters in the code (`DeviceParams`). |
+| **A1** | Weight array 30 × 30; W / S / B 6-bit each | Public NN-IC test-chip specification (TSMC 180 nm; silicon availability listed as 2Q-2025) | ⚠️ Public pages have changed since this study began (they previously carried a *"Work in Progress"* marker dated 4Q24), so the taped-out part may differ again. Array size and bit widths are parameters in the code (`DeviceParams`). |
 | **A2** | Weight-programming error is multiplicative Gaussian, σ_prog ∈ [0, 10 %] | Program-verify tolerance band; range from PCM / ReRAM literature | ⚠️ Not measured on the target process. |
 | **A3** | No A/D or D/A conversion between hidden layers | Public statement: *"eliminates the need for external memory and costly A/D or D/A conversions in hidden layers"* | Derived. Simulated as `adc_mode="none"` (report §3.4–3.5). Figure 2 (§3.3) used an earlier placement that quantises every layer input; at the nominal operating point the two agree (0.718 vs 0.729). |
 | **A4** | Hidden-layer non-linearity | — | ⚠️ The simulation uses **ReLU**. A current-mode circuit is more likely to saturate (tanh-like); the effect of that difference is not studied. |
@@ -23,6 +23,7 @@ Identifiers are kept stable across revisions, so they are not sequential within 
 | **A6** | Device-to-device mismatch is fixed per chip (σ_d2d = 2 %); programming / cycle-to-cycle error is redrawn on every inference | Standard analog in-memory-compute modelling convention | Convention |
 | **A7** | Layers larger than 30 × 30 would be tiled, with input-direction partial sums added as currents | Standard crossbar practice | ⚠️ Multi-tile cascading is unconfirmed. The target model does not need it: every layer fits a single tile. |
 | **A15** | Signal-path read noise is additive Gaussian, std = σ_read · mean\|W·x\| per layer, swept over 0–34 % (≈ 0–2 LSB of a 6-bit A/D) | Modelling choice: a stress range that makes A/D noise regeneration observable | ⚠️ **Not a device parameter.** The real specification — and whether read noise is absolute or signal-proportional — must come from the analog design team. |
+| **A18** | σ_read is treated as the model-side image of whatever degrades the signal path as activations are driven faster (report §3.4, against the public claim that accuracy *"degrades smoothly with increasing activation signal frequency, even without S/H"*) | Interpretation | ⚠️ **No calibrated mapping** between an activation frequency and an LSB figure was established. Only additive noise is modelled; offset and gain error of the signal path are not. |
 
 ### Not modelled
 
@@ -30,6 +31,8 @@ Identifiers are kept stable across revisions, so they are not sequential within 
   (power-law drift) differ fundamentally; the PCM power law common in the literature must not be
   applied to the other two. `DeviceParams.drift` exists but is 0 in all experiments.
 - **Temperature** dependence of gains, time constants and filter frequencies.
+- **Offset and gain error** of the analog signal path between layers — only additive noise is modelled (A18).
+- **Power and energy.** The public nano-power figures (A/D ≲ 1 µA, smart amplifier ≲ 150 nA) are quoted in the report to motivate the converter-placement question; no power number is computed or claimed.
 - **Signal saturation** at the supply rails. `DeviceParams.clip` exists but is 0 in all experiments.
 - **An analog front end.** Features are digital log-mel spectra. The front-end recommendation in the
   report (§4, item 2) rests on the time-versus-frequency result, not on a simulated filter bank.
@@ -86,3 +89,5 @@ Answers to these would change the conclusions most directly.
    to the signal current? This decides whether multi-tile cascading has a cost. (A7, A15)
 9. What are the noise, offset and gain error of the analog signal path between hidden layers
    (current mirrors, transimpedance stages)? (A15)
+10. What activation frequency corresponds to a given signal-path noise figure? This is the missing link
+    between the accuracy budget in report §3.4 and the throughput specification. (A18)
