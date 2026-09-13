@@ -13,14 +13,19 @@
 
 ## Summary
 
-The MLPerf Tiny anomaly-detection reference model occupies **380 tiles** of a 30 × 30 crossbar, and one of its layers alone needs 110. This study compresses it to **6 tiles**, one per layer, and evaluates it on a behavioural model of a 6-bit analog MAC array with no A/D or D/A conversion between hidden layers:
-10 simulated chips, at least three training seeds per condition. Task: ToyCar machine-sound anomaly detection (DCASE 2020 Task 2).
+The MLPerf Tiny anomaly-detection reference model — ten fully connected layers,
+`640 → [128]×4 → 8 → [128]×4 → 640` — occupies **380 tiles** of a 30 × 30 crossbar, and one of its
+layers alone needs 110. This study compresses it to a **six-layer** network, `30 → [30]×2 → 4 →
+[30]×2 → 30`, that occupies **6 tiles** — one per layer — and evaluates it on a behavioural model of a
+6-bit analog MAC array with no A/D or D/A conversion between hidden layers: 10 simulated chips, at
+least three training seeds per condition. Task: ToyCar machine-sound anomaly detection
+(DCASE 2020 Task 2).
 
 1. **Six tiles are enough.** On the simulated array (6-bit W/S/B, 3 % programming error, 2 % device
    mismatch, signal-path noise, no inter-layer A/D) the compressed model reaches **AUC 0.729 ± 0.012** —
    level with the same network in fp32 (0.720–0.727) and about 80 % of the above-chance discrimination
-   of the 380-tile reference (0.785 ± 0.008). Every layer fits one tile, so multi-tile cascading is not
-   on its critical path. (§2.2, §3.1)
+   of the 380-tile reference (0.785 ± 0.008). Each of its six layers fits one tile, so multi-tile
+   cascading is not on its critical path. (§2.2, §3.1)
 2. **Spend the input budget on time, not frequency.** At equal dimension, 6 mel bands × 5 frames beats
    30 bands × 1 frame by **+0.068 AUC** (t = 4.2). The 30 input lines are the scarce resource, and an
    analog front end with configurable time constants can supply temporal context before the D/A without
@@ -86,16 +91,19 @@ two tiling directions are not equally cheap:
   every contributing tile adds its own mismatch and read noise to the same summing node.
   **Input-direction tiling is where accuracy is spent.**
 
-| Layer | Reference | Tiles (out × in) | Target | Tiles |
+The target is shallower as well as narrower than the reference — `30 → [30]×2 → 4 → [30]×2 → 30`,
+six fully connected layers against ten:
+
+| Stage | Reference (10 layers) | Tiles | Target (6 layers) | Tiles |
 |---|---|---|---|---|
-| 1 | FC 640 → 128 | **110** (5 × 22) | FC 30 → 30 | 1 |
-| 2–4 | FC 128 → 128 | 25 each (5 × 5) | FC 30 → 30 | 1 |
-| bottleneck in | FC 128 → 8 | 5 | FC 30 → 4 | 1 |
-| bottleneck out | FC 8 → 128 | 5 | FC 4 → 30 | 1 |
-| 6–8 | FC 128 → 128 | 25 each | FC 30 → 30 | 1 |
-| output | FC 128 → 640 | **110** (22 × 5) | FC 30 → 30 | 1 |
-| **Total** | | **380** | | **6** |
-| Largest layer | | 110 | | **1** |
+| Input layer | FC 640 → 128 | **110** (5 × 22) | FC 30 → 30 | 1 |
+| Encoder blocks | 3 × FC 128 → 128 | 3 × 25 = 75 | 1 × FC 30 → 30 | 1 |
+| Into bottleneck | FC 128 → 8 | 5 | FC 30 → 4 | 1 |
+| Out of bottleneck | FC 8 → 128 | 5 | FC 4 → 30 | 1 |
+| Decoder blocks | 3 × FC 128 → 128 | 3 × 25 = 75 | 1 × FC 30 → 30 | 1 |
+| Output layer | FC 128 → 640 | **110** (22 × 5) | FC 30 → 30 | 1 |
+| **Total** | **10 layers** | **380** | **6 layers** | **6** |
+| Largest single layer | | 110 | | **1** |
 | Parameters | | 267,928 | | 4,242 |
 
 The reference model's first layer needs 22 tiles in the input direction alone: 22 partial-sum currents on every output node, each carrying its own mismatch and noise. The target model tiles in neither direction, so multi-tile cascading — the one hardware capability this study could not confirm (A7) — is not required to run it.
@@ -138,7 +146,7 @@ fp32 training, 3 seeds.
 | Reference | 128 bands × 5 frames = 640 | 380 (110) | 267,928 | 0.7847 ± 0.0084 |
 | **Target** | 6 bands × 5 frames = 30 | **6 (1)** | **4,242** | 0.7268 ± 0.0117 |
 
-The target keeps 79.7 % of the reference's above-chance discrimination with 63× fewer tiles and parameters, and every layer fits a single tile. Frequency resolution costs about 0.021 AUC per halving (640 / 320 / 160 / 80 dimensions give 0.785 / 0.762 / 0.742 / 0.721).
+The target keeps 79.7 % of the reference's above-chance discrimination with 63× fewer tiles and parameters. Its six layers — 30 → 30 → 30 → 4 → 30 → 30 → 30 in activation widths — occupy one tile each. Frequency resolution costs about 0.021 AUC per halving (640 / 320 / 160 / 80 dimensions give 0.785 / 0.762 / 0.742 / 0.721).
 
 **How to spend 30 input lines** (hidden width 30):
 
