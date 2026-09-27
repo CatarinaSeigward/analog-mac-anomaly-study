@@ -10,3 +10,6 @@ docs/*
 
 # Build artefact: self-contained render of REPORT.md (figures + assumptions embedded)
 REPORT.html
+
+# Version-1 LaTeX draft, superseded by REPORT.md / docs/REPORT_full.md
+REPORT.tex

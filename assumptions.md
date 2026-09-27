@@ -74,7 +74,7 @@ Identifiers are kept stable across revisions, so they are not sequential within 
 
 - The 80 × 80 binary (BNN) array.
 - A learnable analog front end (filter bank, envelope detection, gain control).
-- Heart-sound (PCG) data and machine types other than ToyCar.
+- Other machine types and sensing modalities beyond ToyCar audio.
 - Multi-tile cascading — deferred in version 1, because under a signal-proportional noise model extra tiles
   cost nothing. The revised device model now has an absolute noise floor that adds per input tile, so the
   experiment is meaningful; it has not been run (question 9).
