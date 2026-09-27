@@ -864,7 +864,7 @@ h3.col-title { font: 600 12px/1.3 var(--f-mono); letter-spacing: 0.08em; text-tr
       const s = cfg.steps[step];
       out.innerHTML = cfg.value(s);
       input.setAttribute("aria-valuetext", cfg.value(s).replace(/<[^>]+>/g, ""));
-      const W = rowsEl.clientWidth;
+      const W = Math.max(rowsEl.clientWidth, ML + MR + 100);   // a hidden tab reports 0
       const x = a => ML + (Math.min(XMAX, Math.max(XMIN, a)) - XMIN) / (XMAX - XMIN) * (W - ML - MR);
       const st = {};
       rows.forEach(row => {
