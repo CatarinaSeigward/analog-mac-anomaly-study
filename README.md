@@ -1,186 +1,129 @@
-# Machine Acoustic Anomaly Detection on a 30 × 30, 6-bit Analog MAC Array
+# Machine-Sound Anomaly Detection on a 30 × 30, 6-bit Analog MAC Array
 
-**A simulation study of what it takes to run an anomaly-detection model on an analog in-memory-compute
-chip with no A/D conversion between hidden layers.**
+*A simulation study · Kaiwen Lin · KaiwenLin@utexas.edu*
 
-[![The study on one page: 380 tiles to 6, the signal chain on the chip, and what each block must guarantee](site/poster.png)](site/index.html)
+[![The study on one page: 380 tiles to 6, the signal chain on the chip, and three findings](site/poster.png)](https://catarinaseigward.github.io/analog-mac-anomaly-study/site/)
 
-*The same page with interactive plots of every simulated chip: open [`site/index.html`](site/index.html) in a
-browser. It runs locally, with no server or install.*
+*Click the poster for the interactive version, with every simulated chip plotted.*
 
-The MLPerf Tiny anomaly-detection reference model — ten fully connected layers,
-`640 → [128]×4 → 8 → [128]×4 → 640` — needs 380 crossbar tiles of 30 × 30. This study compresses it to
-a six-layer network, `30 → [30]×2 → 4 → [30]×2 → 30`, that fits in **6 tiles** (one per layer), runs it
-on a behavioural model of a 6-bit analog MAC array — per-chip
-device mismatch, weight-programming error, signal-path noise, and different placements of A/D and D/A
-converters — and measures what each hardware constraint costs.
+**The short answer.** A standard machine-sound anomaly detector needs 380 arrays of 30 × 30 weights. Shrunk to
+6 arrays, one per layer, and run on a simulated 6-bit analog chip with no converters between layers, it keeps
+78 % of its detection margin above chance (AUC 0.785 → 0.722). Almost all of that loss comes from shrinking
+(0.727 in ideal digital arithmetic); the analog chip adds nothing measurable, provided the model is trained
+with the chip's imperfections simulated. Nothing here has been tested on silicon.
 
-> **Simulation only — nothing here has been verified on silicon.** The hardware constraints are taken
-> from published test-chip specifications for analog in-memory inference. Every modelling assumption is
-> listed in [assumptions.md](assumptions.md).
+## The question
 
-## Results at a glance
+The chip computes one neural-network layer per 30 × 30 array of stored weights, a *tile*, in analog current,
+with no A/D or D/A conversion between layers. That saves power and area, but errors pass from layer to layer
+uncorrected. I asked three things:
 
-Task: ToyCar, DCASE 2020 Task 2 (unsupervised machine-sound anomaly detection).
-Metric: AUC, mean ± std over training seeds × 10 simulated chips.
+1. Does a useful anomaly detector fit? The MLPerf Tiny benchmark model needs 380 tiles.
+2. What does each hardware limit cost: 30 inputs, 6-bit precision, programming error, chip-to-chip variation,
+   analog noise, no converters between layers?
+3. What must the hardware and the training each guarantee, so that *every* chip works?
 
-> **Version 2 (23 September 2026).** Finding 6 of version 1 was wrong — a bug in the quantization-aware
-> training, not a hardware limit. Every quantized result has been retrained on the corrected code and
-> re-tested under a revised device model; see *Changes since version 1* in the
-> [full report](docs/REPORT_full.md).
+## Three findings
 
-| # | Finding | Key numbers |
-|---|---|---|
-| 1 | A 6-tile model is viable on the simulated analog array | 0.722 ± 0.012 on analog hardware vs 0.720–0.727 in fp32; ≈ 78 % of the above-chance discrimination of the 380-tile reference (0.785); 0.70–0.73 under every revised device model |
-| 2 | Spend the 30-dimensional input budget on time, not frequency | 6 bands × 5 frames beats 30 bands × 1 frame by +0.068 (t = 4.2); leaky integrators with τ ≤ 128 ms match stored frames |
-| 3 | Programming error up to 3 % is nearly free — with hardware-aware training | 0.714–0.735 at σ_prog ≤ 3 %; without it, chips worse than random appear from 1 % |
-| 4 | Where the converters sit is not the constraint; the noise of the signal path is | Removing inter-layer A/D: −0.010 / −0.012 at 0.24 / 0.47 LSB, +0.007 with fixed converter ranges; both placements fail at ≈ 1 LSB |
-| 5 | Activation noise during training decides robustness — it is a regulariser | 0.646 → 0.733 on a quiet chip; +0.014 / +0.027 in plain fp32 at 4 / 8 %; calibration recovers 0.018 of a 0.089 gap |
-| 6 | The converters, not the weights, set the bit-width floor *(corrected in version 2)* | Weights and biases at 4 bits: −0.010 / +0.005; converters at 4 bits: 0.570, unless a per-channel offset precedes the D/A — then 4-bit W/S/B gives 0.723 (6 bits: 0.722) |
+### 1. Removing the converters between layers holds up; the analog noise sets the limit
+
+I compared the chip's design, with conversions only at the two ends of the network, against a conventional one
+that converts at every layer boundary: 2 conversions against 12. With converters modelled as real ones are,
+with a fixed range, dropping the 10 inner conversions costs nothing measurable (+0.007 ± 0.008 AUC).
+
+What matters is the noise of the analog signal path. At about one converter step (1 LSB) of noise, *both*
+designs fail together (0.574 against 0.575). How much noise is tolerable depends on its nature:
+
+- If noise grows with the signal, the budget is about half a converter step.
+- If it is a fixed floor, the network learns to use more of its signal range; 40 dB of dynamic range was still
+  enough, and the true limit is lower.
+- If noise scales with each individual signal value, removing the inner converters does cost 0.016.
+
+**For the chip:** specify the noise of the signal path, not where the converters sit.
+
+### 2. Training, not tighter programming, decides yield
+
+Weight programming is never exact. Trained the usual way and then loaded onto the chip, the *average* chip still
+looks acceptable, but individual chips fail: at 3 % programming error, 8 of 40 simulated chips do worse than a
+coin flip, and the worst scores 0.311. Trained with the chip's imperfections simulated (hardware-aware
+training), none do, and AUC holds at 0.714–0.735 for any programming error up to 3 %. The spread between chips
+narrows up to 5.9×.
 
 ![Figure 2](constraint-study/results/figures/fig2_noise_stefix.png)
 
-*Hardware-aware training (blue) keeps AUC close to fp32 as weight-programming error grows; without it
-(red), the worst simulated chip falls below random guessing.*
+*Right: the worst simulated chip. Trained normally (red), it sits at a coin flip even without programming
+error and falls well below it from 1 %. Trained for the chip (blue), it holds.*
 
-The method, all four figures, per-condition tables, the chip-design implications, the draft handoff
-interface between the ML and hardware sides, and the limitations are in the
-**[full report](docs/REPORT_full.md)** (Chinese: [REPORT_full-zh.md](docs/REPORT_full-zh.md)). A five-minute
-version — the question, the trade-offs and the conclusions in plain language — is **[REPORT.md](REPORT.md)**.
-Section numbers (§) in this README and in `assumptions.md` refer to the full report.
+**For the chip:** a program-verify tolerance of about 3 % is enough, provided the training recipe ships with
+the weights.
 
-## Repository layout
+### 3. Weights need 4 bits; the converters set the floor
 
-```
-.
-├── README.md             this file
-├── REPORT.md             short report, version 2 (five minutes, plain language)
-├── docs/REPORT_full.md   full report, version 2; REPORT_full-zh.md is its Chinese translation;
-│                         version 1 as sent: docs/REPORT_sent.md
-├── assumptions.md        every modelling assumption, and open questions for the hardware team
-├── site/                 one-page summary: index.html (interactive), poster.png, data.js (generated)
-└── constraint-study/
-    ├── configs/          baseline.yaml (MLPerf Tiny reference), fast.yaml (validated sweep config)
-    ├── src/
-    │   ├── data/         DCASE file discovery and labels
-    │   ├── features/     log-mel extraction, windowing, caching
-    │   ├── models/       autoencoder, quantisation (STE / LSQ), analog layer (analog.py)
-    │   ├── noise.py      device parameters; chip sampling isolated from training randomness
-    │   ├── tiling.py     30 × 30 tile budget
-    │   ├── train.py      fp32 and hardware-aware training
-    │   ├── evaluate.py   AUC / pAUC per machine ID
-    │   └── evaluate_analog.py, experiment.py
-    ├── scripts/          data preparation, sweeps, diagnostics, figures
-    ├── tests/            101 unit tests
-    └── results/          figures and aggregated CSVs (model checkpoints are not versioned)
-```
+Lowering one precision at a time shows where the bits are needed. Weights at 4 bits cost 0.010 AUC, and biases
+at 4 bits cost nothing. More than 6 bits buys nothing anywhere. The two converters are the real floor: at 5
+bits they cost nothing, but at 4 bits detection falls to 0.570.
 
-## Setup
+The reason is simple. Sound features sit at a large constant level with small fluctuations on top, and a
+4-bit converter step is larger than the fluctuation it must carry. Subtracting each input's average level
+before the D/A, and adding it back after the A/D, shrinks the needed range 3.6×. A chip with 4-bit weights,
+biases *and* converters then matches the 6-bit one (0.723 against 0.722).
 
-Developed on Windows 11 with an RTX 4060 Laptop GPU (8 GB) and Python 3.11. All commands below run from
-`constraint-study/`.
+**For the chip:** use 4-bit cells instead of 6-bit ones. Whether the converters can also drop to 4 bits
+depends on one front-end feature, the per-input offset.
 
-```bash
-conda create -n ailinear python=3.11 -y
-conda activate ailinear
-cd constraint-study
-pip install torch --index-url https://download.pytorch.org/whl/cu126
-pip install -r requirements.txt
-python scripts/check_env.py
-```
+## Also found
 
-Install `torch` from the PyTorch index first: on Windows a plain `pip install torch` pulls the CPU-only
-build. Pick the current CUDA tag at <https://pytorch.org/get-started/locally/>.
+- **Spend the 30 inputs on time, not frequency.** 6 bands × 5 moments beat 30 bands × 1 moment by +0.068 AUC.
+  Leaky integrators with time constants of 128 ms or less work as well as stored frames.
+- **Adding noise during training is a regulariser.** A model trained without it loses 0.087 AUC even on a
+  perfectly quiet chip, and the same trick helps in plain digital arithmetic too. Per-chip calibration after
+  manufacturing then adds almost nothing (+0.001 to +0.006) and can be dropped from the production flow.
+- **Set the alarm threshold on a real chip.** Chip noise raises every anomaly score 1.8×, so a threshold set in
+  simulation flags every clip. Set on one reference chip, it holds 8–13 % false alarms on nine others
+  (target 10 %).
+- **The conclusions survive a more realistic simulator:** fixed converter ranges, a saturating activation and
+  three kinds of analog noise. The one exception is noted in finding 1.
 
-`requirements-analog.txt` (IBM aihwkit) is **not** needed: the study uses its own behavioural model,
-`src/models/analog.py`.
+## How it was tested
 
-## Data
+- **Task:** the MLPerf Tiny anomaly detector on toy-car recordings (DCASE 2020 Task 2): an autoencoder trained
+  only on healthy machines that flags recordings it cannot rebuild well. I first reproduced its published result.
+- **Shrinking:** 10 layers became 6, with no layer larger than one tile. Splitting a layer's *inputs* across
+  tiles is where accuracy is lost, because several tiles add their errors on one wire. The price is 30 input
+  values instead of 640.
+- **Chip model:** every layer gets 6-bit rounding of weights, signals and biases; weight-programming error;
+  a fixed per-chip error pattern; analog noise; and converters only where they are placed.
+- **Measurement:** AUC, where 0.5 is a coin flip and 1.0 is perfect. Every result covers 3 or 4 trainings ×
+  10 simulated chips. I always look at the worst chip as well as the average, and I compare designs on the same
+  training runs.
 
-The study uses the ToyCar machine type of DCASE 2020 Task 2 (from ToyADMOS), exactly as the MLPerf Tiny
-benchmark does:
+## What the ML side hands to the hardware side
 
-| Split | Source | Machine IDs | Clips |
-|---|---|---|---|
-| Training | development set + additional training set | 01–07 | 7,000, all normal |
-| Test | development test set | 01–04 | 2,459: 1,400 normal, 1,059 anomalous |
+The whole handoff fits on a page: the tile map, 4,242 weight and bias codes, one scale per tile, a gain and
+offset per channel, the fixed converter ranges (plus per-input offsets for 4-bit converters), the alarm
+threshold measured on a reference chip, and the noise levels the model was trained against. The last item is
+easy to forget: a model is only valid on chips no noisier than it was trained for.
 
-Clips are 16 kHz mono, about 10 s. The official source is Zenodo
-([development](https://zenodo.org/records/3678171), [additional training](https://zenodo.org/records/3727685)).
-If Zenodo is unreachable, the same files are mirrored on Kaggle (ToyCar only, about 3.2 GB; needs a
-Kaggle API token):
+## What this does not show
 
-```bash
-kaggle datasets download -d daisukelab/dc2020task2 -p data/dc2020task2 --unzip
-kaggle datasets download -d daisukelab/dc2020task2added -p data/dc2020task2added --unzip
-```
+- **Simulation only.** Noise levels are assumptions or stress tests, not measurements of a real chip.
+- **One modest benchmark.** At 10 % false alarms the detector catches about 37 % of toy-car faults. The
+  relative costs above should transfer, but the absolute numbers belong to this dataset. Industrial recordings
+  (MIMII) would be a stronger test.
+- **Not modelled:** power, temperature, weight drift, gain and offset errors in the analog path, or a front end
+  simulated from the raw waveform.
 
-The second dataset's title is misspelled ("Additinal"); its slug is `dc2020task2added`. The expected
-layout is below — if an archive unpacks into an extra sub-folder, move `train/` and `test/` up one level.
-Paths are set in `configs/baseline.yaml` and `configs/fast.yaml`.
+## Questions for the hardware team
 
-```
-constraint-study/data/
-├── dc2020task2/
-│   ├── train/    4000 wav   IDs 01–04, normal
-│   └── test/     2459 wav   IDs 01–04, normal + anomalous
-└── dc2020task2added/
-    └── train/    3000 wav   IDs 05–07, normal
-```
+1. **Is the analog read noise a fixed floor, or proportional to the signal?** It sets the noise budget and
+   decides whether removing the inter-layer converters stays free.
+2. **Is subtracting a per-input offset before the D/A cheap in your front end?** It decides whether the
+   converters can drop from 6 to 4 bits.
+3. **How many 30 × 30 arrays are on a die, and can one drive the next directly in analog?** The 6-tile design
+   depends on it.
 
-MLPerf Tiny trains **one model on all seven machine IDs** (the DCASE 2020 baseline trains one model per
-ID). Without the additional training set only 4,000 clips remain and the reference number is not
-reproduced.
+## More
 
-Build the log-mel caches — one per number of mel bands used in the sweeps. The script checks the layout
-and the clip counts first:
-
-```bash
-python scripts/prepare_data.py --n-mels 6 10 16 30 32 64 128
-```
-
-## Reproducing the results
-
-Scripts skip runs whose checkpoints already exist, so any command can be interrupted and restarted.
-Times are approximate, on the GPU above.
-
-| Result | Command | Time |
-|---|---|---|
-| Reference reproduction (report §2.1) | `python -m src.train --config configs/baseline.yaml` then `python -m src.evaluate --config configs/baseline.yaml` | 35 min |
-| Fast-configuration validation (§2.1) | `python -m src.train --config configs/fast.yaml` then `python -m src.evaluate --config configs/fast.yaml --compare c0_baseline` | 6 min |
-| Figure 1 — input dimensionality (§3.1) | `python scripts/sweep.py --track dim alloc chip --seeds 0 1 2` | 2.5 h |
-| Leaky-integrator front end (§3.1) | `python scripts/probe_leaky.py --lr 0.0005 --tag lr5e-4 --arms fp32:frames fp32:tau512 fp32:tau128`, then `--tag lr5e-4_hwa --arms hwa6:frames hwa6:tau128` | 1 h |
-| Figures 2–3, BN calibration, cross-evaluation (§3.2, §3.3, §4.2) | `N_SHARDS=3 bash scripts/run_v11.sh` | 5 h |
-| fp32 noise-injection control (§3.3) | `bash scripts/run_noise_reg.sh` | 1 h |
-| Figure 4 — bit width (§3.4) | `bash scripts/run_ste_check.sh`, `run_fig4_stefix.sh`, `run_center_check.sh` (`N_SHARDS=3`) | 2 h |
-| Revised device model (§3.5) | `N_SHARDS=3 bash scripts/run_v2.sh` | 5.5 h |
-| Decision threshold (§4.3) | `python scripts/probe_operating_point.py` | 2 min |
-| Figures from the CSVs | `python scripts/make_figures.py` (version 1) and `python scripts/make_figures.py --tag stefix` (Figures 2–3, version 2; Figure 4 v2 is written with Figure 4) | seconds |
-| Robustness table, version 1 → 2 | `python scripts/robustness_table.py` | seconds |
-| Data for the one-page summary (`site/data.js`) | `python scripts/export_site_data.py` | seconds |
-
-Version-1 results are reproduced with the scripts' defaults (no `--tag`): `sweep_noise.py --seeds 0 1 2 3`,
-`bash scripts/run_day4.sh`, and `sweep_bits.py --train-sigma-read 0` for the bit-width run without
-activation noise. They train with the corrected straight-through estimator, so the quantized results will
-differ from those in version 1.
-
-Several parallel processes need about 1.4 GB of host memory each; choose `N_SHARDS` from the free physical
-memory. Stopping a parallel script requires stopping its sub-shells as well as the Python processes.
-
-On an 8 GB laptop GPU under Windows, a single large GPU allocation can fail even when memory is free.
-The training script therefore keeps feature caches larger than 0.5 GB in host memory and streams
-batches (`train.store_device: auto` in the configs).
-
-## Tests
-
-```bash
-pytest -q
-```
-
-101 tests, including: the analog layer reduces exactly to `nn.Linear` when noise and quantisation are
-off; device mismatch is frozen per chip while cycle-to-cycle noise is redrawn; chip sampling does not
-touch the training random stream; tiled and dense matrix products agree; in the no-inter-layer-A/D
-mode hidden-layer inputs stay continuous; the straight-through estimator passes the gradient on the top
-quantization level, and a quantized bias can learn a DC offset (the version-1 bug); fixed converter ranges
-calibrate in training, freeze in evaluation and do not depend on batch composition; and the absolute, shot
-and proportional noise models scale as defined, with absolute noise adding per input tile.
+- [Full report](docs/REPORT_full.md): method, every table and figure, calibration and handoff details.
+- [assumptions.md](assumptions.md): every modelling assumption and its status.
+- [constraint-study/](constraint-study/): code, data preparation, reproduction commands and 101 unit tests.

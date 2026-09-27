@@ -5,6 +5,10 @@
 #只忽略 checkpoint；图和汇总 CSV 要入库，README / REPORT 里的图片才能显示
 results/*
 !results/figures/
+# Figures of the first report, superseded by the *_stefix / *_v2 versions; kept locally only
+results/figures/fig2_noise.png
+results/figures/fig3_adc.png
+results/figures/fig4_bits.png
 !results/*.csv
 logs/
 *.log

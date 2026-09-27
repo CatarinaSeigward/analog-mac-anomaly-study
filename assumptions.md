@@ -1,8 +1,6 @@
 # Assumptions
 
-Last reviewed: 23 September 2026, for version 2 of the [full report](docs/REPORT_full.md) — after every
-quantized result was retrained on the corrected code and re-tested under a revised device model. "Report §…"
-below refers to the full report.
+"Report §…" below refers to the [full report](docs/REPORT_full.md).
 
 This is a **simulation study**; nothing has been verified on silicon. Target-hardware parameters are
 inferred from publicly available material or taken from the literature. Every assumption is listed
@@ -55,7 +53,7 @@ Identifiers are kept stable across revisions, so they are not sequential within 
 | **A10** | Clip anomaly score = mean reconstruction MSE over **all** windows of the clip; evaluation uses every window | Reference implementation | Verified |
 | **A11** | Train / test splits are by machine ID, never by recording | Dataset protocol | Verified |
 | **A12** | 3–4 training seeds per condition × 10 simulated chips establish the reported effects | Seed-to-seed std up to 0.065 | ⚠️ Adequate for the reported gaps (≥ 0.03, or tight paired differences); differences within about ±0.02 in report §3.5 are not significant. The earlier open item — activation-noise-trained models evaluating ≈ 0.02 above fp32 — is **settled**: a plain-fp32 control shows +0.014 at 4 % and +0.027 at 8 % (paired, 3/3 seeds). |
-| **A16** | Activation D/A and A/D quantisation uses a **dynamic per-batch max-abs scale**, not a fixed calibrated range | Implementation choice (version 1) | **Resolved in the revised device model (report §2.3, §3.5).** Converter full scales are calibrated at the 99.9th percentile during training and frozen. `none` is unchanged (+0.001); `per_layer` loses 0.017, so part of its version-1 advantage came from re-ranging twelve converters every batch. Main results keep the dynamic scale for continuity with version 1. |
+| **A16** | Activation D/A and A/D quantisation uses a **dynamic per-batch max-abs scale**, not a fixed calibrated range | Implementation choice (original device model) | **Resolved in the revised device model (report §2.3, §3.5).** Converter full scales are calibrated at the 99.9th percentile during training and frozen. `none` is unchanged (+0.001); `per_layer` loses 0.017, so part of its advantage under the dynamic scale came from re-ranging twelve converters every batch. Main results keep the dynamic scale, with the fixed-range results reported alongside. |
 | **A17** | Models of the no-inter-layer-A/D architecture are trained with 4 % activation noise, also when deployed on a quiet signal path | Cross-evaluation: training-time activation noise, not deployment-time noise, removes a −0.087 AUC fragility (report §3.3) | Result-driven choice; used for the bit-width sweep (report §3.4). Mechanism: regularisation — it raises AUC in plain fp32 too, and still rises at 8 %, so 4 % may not be optimal. |
 | **A20** | A per-channel offset (the training-set mean of each input line) can be subtracted ahead of the D/A and added back after the output A/D | Proposed: a log-mel feature is mostly DC, so the converter range is otherwise spent on it | ⚠️ **Simulated only (report §3.4).** It shrinks the converter full scale 3.6× and lets the converters drop to 4 bits. Whether it is cheap in the front end is open question 12. |
 
@@ -75,8 +73,7 @@ Identifiers are kept stable across revisions, so they are not sequential within 
 - The 80 × 80 binary (BNN) array.
 - A learnable analog front end (filter bank, envelope detection, gain control).
 - Other machine types and sensing modalities beyond ToyCar audio.
-- Multi-tile cascading — deferred in version 1, because under a signal-proportional noise model extra tiles
-  cost nothing. The revised device model now has an absolute noise floor that adds per input tile, so the
+- Multi-tile cascading — under a signal-proportional noise model extra tiles cost nothing. The revised device model now has an absolute noise floor that adds per input tile, so the
   experiment is meaningful; it has not been run (question 9).
 - Power and energy; real silicon.
 

@@ -42,12 +42,6 @@ def _tagged(name: str) -> str:
     return f"{stem}{TAG}{dot}{ext}"
 
 
-def _stamp(fig) -> None:
-    if TAG:
-        fig.text(0.995, 0.005, f"v1.1{TAG}: retrained after the STE fix (22 Sep 2026)",
-                 ha="right", va="bottom", fontsize=7, color="#777777")
-
-
 def _style(ax):
     ax.grid(alpha=0.25, linewidth=0.6)
     ax.set_axisbelow(True)
@@ -202,7 +196,6 @@ def figure2(results_dir: Path, out_dir: Path) -> None:
     _style(axB)
 
     fig.tight_layout()
-    _stamp(fig)
     out = out_dir / _tagged("fig2_noise.png")
     fig.savefig(out, dpi=180, bbox_inches="tight")
     plt.close(fig)
@@ -276,7 +269,6 @@ def figure3(results_dir: Path, out_dir: Path) -> None:
     _style(axB)
 
     fig.tight_layout()
-    _stamp(fig)
     out = out_dir / _tagged("fig3_adc.png")
     fig.savefig(out, dpi=180, bbox_inches="tight")
     plt.close(fig)
@@ -332,7 +324,6 @@ def figure4(results_dir: Path, out_dir: Path) -> None:
 C_W = "#1f77b4"      # 只降 W（电导电平）
 C_S = "#ff7f0e"      # 只降 S（首尾两个转换器）
 C_B = "#9467bd"      # 只降 B（偏置 DAC）
-C_OLD = "#9a9a9a"    # STE 修复前（报告 v1）
 
 
 def _nominal(results_dir: Path, name: str) -> pd.DataFrame | None:
@@ -345,7 +336,7 @@ def _nominal(results_dir: Path, name: str) -> pd.DataFrame | None:
 def figure4_v2(results_dir: Path, out_dir: Path) -> None:
     """图 4 v2：STE 修复后的位宽扫描（2026-09-22）。原 fig4_bits.png 保留，报告 v1 引用的是它。
 
-    A：W/S/B 同步，修复后 vs 修复前（报告 v1）。
+    A：W/S/B 同步。
     B：每次只降一项、其余 6-bit —— 权重能降到 4 bit，下限在首尾两个转换器。
     橙色对白底对比度 < 3:1、蓝绿在 tritan 下落在 6–8 下限带（validate_palette.js），
     所以每条线都直接标注，不只靠颜色。
@@ -354,12 +345,6 @@ def figure4_v2(results_dir: Path, out_dir: Path) -> None:
     fig, (axA, axB) = plt.subplots(1, 2, figsize=(12.5, 4.8), sharey=True)
 
     # ---------------- Panel A：同步扫描 ----------------
-    old = pd.concat([d for d in (_nominal(results_dir, "bits_r0.04.csv"),
-                                 _nominal(results_dir, "bits_r0.04_b5.csv")) if d is not None])
-    old = old.sort_values("bits")
-    axA.plot(old.bits, old.auc_mean, marker="o", ms=4, lw=1.2, ls="--", color=C_OLD,
-             label="before STE fix (report v1)")
-
     # 2-bit 不是能工作的模型：D/A 后输入只剩 2 个电平、输出是常数，AUC 只反映那个常数
     # 离测试片段有多远（3 个 seed 分别 0.52 / 0.56 / 0.82）。空心点 + 点线，不接进趋势线。
     last = {}
@@ -403,9 +388,10 @@ def figure4_v2(results_dir: Path, out_dir: Path) -> None:
     axA.axhline(0.5, color="#999999", ls=":", lw=1)
     axA.set_xticks([2, 4, 5, 6, 8, 10])
     axA.set_xlim(1.6, 11.4)
+    axA.set_ylim(bottom=0.45)   # 与 B 共享 y 轴；给底部的 "chip spec" 标注留位置
     axA.set_xlabel("W / S / B precision, all three together  (bits, QAT per width)")
     axA.set_ylabel("AUC  (mean ± std, 3 seeds × 10 chips)")
-    axA.set_title("A.  Training fixed: 5-bit costs ~0.01; removing the DC rescues 4-bit",
+    axA.set_title("A.  All three together: 5 bits costs ~0.01; removing the DC rescues 4 bits",
                   fontsize=9.5, loc="left")
     axA.legend(fontsize=8, loc="lower right", framealpha=0.95)
     _style(axA)

@@ -403,8 +403,8 @@ h3.col-title { font: 600 12px/1.3 var(--f-mono); letter-spacing: 0.08em; text-tr
   <!-- ======================= Poster ======================= -->
   <section class="poster" id="poster" aria-labelledby="title">
     <div class="strip">
-      <span class="eyebrow">Simulation study · Analog in-memory inference · 30 × 30 array · 6-bit W / S / B</span>
-      <span class="eyebrow">Kaiwen Lin · Version 2 · 23 Sep 2026</span>
+      <span class="eyebrow">Simulation study · 30 × 30 analog MAC array</span>
+      <span class="eyebrow">Kaiwen Lin</span>
     </div>
 
     <header class="masthead">
@@ -527,8 +527,7 @@ h3.col-title { font: 600 12px/1.3 var(--f-mono); letter-spacing: 0.08em; text-tr
 
     <div class="poster-foot">
       <span><b>Simulation only.</b> Nothing here has run on silicon.</span>
-      <span>ToyCar, DCASE 2020 Task 2 · AUC: 0.5 = coin flip, 1 = perfect</span>
-      <span class="needs-data" data-k="basis"></span>
+      <span class="needs-data">ToyCar (DCASE 2020) · <span data-k="basis"></span> · AUC 0.5 = coin flip</span>
     </div>
   </section>
 
@@ -620,14 +619,11 @@ h3.col-title { font: 600 12px/1.3 var(--f-mono); letter-spacing: 0.08em; text-tr
 
   <footer class="foot">
     <nav class="links" aria-label="Documents">
-      <a data-path="REPORT.md" href="../REPORT.md">Short report</a>
+      <a data-path="" href="../">Summary (README)</a>
       <a data-path="docs/REPORT_full.md" href="../docs/REPORT_full.md">Full report</a>
       <a data-path="assumptions.md" href="../assumptions.md">Every modelling assumption</a>
       <a data-path="constraint-study" href="../constraint-study/">Code and results</a>
     </nav>
-    <p>Version 2 corrects the bit-width finding of the 12 September report. The earlier 4-bit collapse was a bug in my quantization-aware
-      training, not a hardware limit; every quantized result was retrained on the fixed code.
-      <span class="needs-data" data-k="generated"></span></p>
     <p class="contact">Kaiwen Lin · KaiwenLin@utexas.edu</p>
   </footer>
 </main>
@@ -659,7 +655,7 @@ h3.col-title { font: 600 12px/1.3 var(--f-mono); letter-spacing: 0.08em; text-tr
   if (REPO_URL) {
     $$("a[data-path]").forEach(a => {
       const p = a.dataset.path;
-      a.href = `${REPO_URL}/${p.includes(".") ? "blob" : "tree"}/main/${p}`;
+      a.href = p ? `${REPO_URL}/${p.includes(".") ? "blob" : "tree"}/main/${p}` : REPO_URL;
     });
   }
   if (!D) { document.documentElement.classList.add("no-data"); return; }
@@ -715,8 +711,7 @@ h3.col-title { font: 600 12px/1.3 var(--f-mono); letter-spacing: 0.08em; text-tr
       return `${fmt(Math.min(...m))}–${fmt(Math.max(...m))}`;
     })(),
     "hwa-row": `Without it: ${s3.below} of ${s3.n} chips below chance`,
-    "basis": `${H.target.n_seeds} training runs × ${H.target.n_chips} simulated chips per point`,
-    "generated": `Numbers exported from the result files on ${D.generated}.`,
+    "basis": `${H.target.n_seeds} training runs × ${H.target.n_chips} simulated chips`,
   };
   $$("[data-k]").forEach(el => { if (el.dataset.k in text) el.textContent = text[el.dataset.k]; });
 
