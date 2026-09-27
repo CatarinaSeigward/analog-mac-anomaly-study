@@ -33,6 +33,21 @@ C_BEST = "#2ca02c"   # 芯片网络 + 最优分配
 C_SPEC = "#555555"
 
 
+TAG = ""
+"""``--tag stefix`` 时为 "_stefix"：图 2、图 3 读带 tag 的 CSV、输出带 tag 的图，原图不动。"""
+
+
+def _tagged(name: str) -> str:
+    stem, dot, ext = name.rpartition(".")
+    return f"{stem}{TAG}{dot}{ext}"
+
+
+def _stamp(fig) -> None:
+    if TAG:
+        fig.text(0.995, 0.005, f"v1.1{TAG}: retrained after the STE fix (22 Sep 2026)",
+                 ha="right", va="bottom", fontsize=7, color="#777777")
+
+
 def _style(ax):
     ax.grid(alpha=0.25, linewidth=0.6)
     ax.set_axisbelow(True)
@@ -134,7 +149,7 @@ def figure2(results_dir: Path, out_dir: Path) -> None:
     A：跨 (种子 × 芯片) 的 AUC mean ± std
     B：最差芯片的 AUC —— 量产良率视角，裸训会出现低于随机的芯片
     """
-    df = pd.read_csv(results_dir / "noise.csv")
+    df = pd.read_csv(results_dir / _tagged("noise.csv"))
     x_pct = lambda s: s * 100  # noqa: E731
 
     fig, (axA, axB) = plt.subplots(1, 2, figsize=(12.5, 4.8))
@@ -187,7 +202,8 @@ def figure2(results_dir: Path, out_dir: Path) -> None:
     _style(axB)
 
     fig.tight_layout()
-    out = out_dir / "fig2_noise.png"
+    _stamp(fig)
+    out = out_dir / _tagged("fig2_noise.png")
     fig.savefig(out, dpi=180, bbox_inches="tight")
     plt.close(fig)
     print(f"[fig2] -> {out}")
@@ -204,7 +220,7 @@ def figure3(results_dir: Path, out_dir: Path) -> None:
     A：目标深度（2 个隐藏块）下，AUC 随 σ_read 的变化，两种架构对比
     B：深度的影响（深度与参数量混杂，危险点 K）
     """
-    df = pd.read_csv(results_dir / "arch.csv")
+    df = pd.read_csv(results_dir / _tagged("arch.csv"))
     fig, (axA, axB) = plt.subplots(1, 2, figsize=(12.5, 4.8))
 
     # ---------------- Panel A ----------------
@@ -227,7 +243,7 @@ def figure3(results_dir: Path, out_dir: Path) -> None:
     axA.set_ylabel("AUC  (mean ± std over seeds × 10 chips)")
     axA.set_title("A. Target depth: cost of removing inter-layer A/D", fontsize=11, loc="left")
     # 训练配方对照：none 架构用 4% 激活噪声训练、部署到安静芯片（σ_read = 0）
-    cross = results_dir / "train_noise_cross.csv"
+    cross = results_dir / _tagged("train_noise_cross.csv")
     if cross.exists():
         c = pd.read_csv(cross)
         q = c[(c.train_sigma_read == 0.04) & (c.eval_sigma_read == 0.0)].auc
@@ -260,7 +276,8 @@ def figure3(results_dir: Path, out_dir: Path) -> None:
     _style(axB)
 
     fig.tight_layout()
-    out = out_dir / "fig3_adc.png"
+    _stamp(fig)
+    out = out_dir / _tagged("fig3_adc.png")
     fig.savefig(out, dpi=180, bbox_inches="tight")
     plt.close(fig)
     print(f"[fig3] -> {out}")
@@ -308,6 +325,133 @@ def figure4(results_dir: Path, out_dir: Path) -> None:
     plt.close(fig)
     print(f"[fig4] -> {out}")
 
+    if (results_dir / "bits_r0.04_b2-4-5-6-8-10_stefix.csv").exists():
+        figure4_v2(results_dir, out_dir)
+
+
+C_W = "#1f77b4"      # 只降 W（电导电平）
+C_S = "#ff7f0e"      # 只降 S（首尾两个转换器）
+C_B = "#9467bd"      # 只降 B（偏置 DAC）
+C_OLD = "#9a9a9a"    # STE 修复前（报告 v1）
+
+
+def _nominal(results_dir: Path, name: str) -> pd.DataFrame | None:
+    f = results_dir / name
+    if not f.exists():
+        return None
+    return pd.read_csv(f).query("condition == 'nominal'").sort_values("bits")
+
+
+def figure4_v2(results_dir: Path, out_dir: Path) -> None:
+    """图 4 v2：STE 修复后的位宽扫描（2026-09-22）。原 fig4_bits.png 保留，报告 v1 引用的是它。
+
+    A：W/S/B 同步，修复后 vs 修复前（报告 v1）。
+    B：每次只降一项、其余 6-bit —— 权重能降到 4 bit，下限在首尾两个转换器。
+    橙色对白底对比度 < 3:1、蓝绿在 tritan 下落在 6–8 下限带（validate_palette.js），
+    所以每条线都直接标注，不只靠颜色。
+    """
+    joint = pd.read_csv(results_dir / "bits_r0.04_b2-4-5-6-8-10_stefix.csv")
+    fig, (axA, axB) = plt.subplots(1, 2, figsize=(12.5, 4.8), sharey=True)
+
+    # ---------------- Panel A：同步扫描 ----------------
+    old = pd.concat([d for d in (_nominal(results_dir, "bits_r0.04.csv"),
+                                 _nominal(results_dir, "bits_r0.04_b5.csv")) if d is not None])
+    old = old.sort_values("bits")
+    axA.plot(old.bits, old.auc_mean, marker="o", ms=4, lw=1.2, ls="--", color=C_OLD,
+             label="before STE fix (report v1)")
+
+    # 2-bit 不是能工作的模型：D/A 后输入只剩 2 个电平、输出是常数，AUC 只反映那个常数
+    # 离测试片段有多远（3 个 seed 分别 0.52 / 0.56 / 0.82）。空心点 + 点线，不接进趋势线。
+    last = {}
+    for cond, color, label in [
+        ("quant_only", C_C1, "quant. only"),
+        ("nominal", C_C3, "quant. + nominal noise"),
+    ]:
+        d = joint[joint.condition == cond].sort_values("bits")
+        ok, deg = d[d.bits >= 4], d[d.bits <= 4]
+        axA.plot(ok.bits, ok.auc_mean, marker="o", ms=5, lw=1.8, color=color, label=label)
+        axA.fill_between(ok.bits, ok.auc_mean - ok.auc_std, ok.auc_mean + ok.auc_std,
+                         color=color, alpha=0.15, lw=0)
+        axA.plot(deg.bits, deg.auc_mean, ls=":", lw=1.2, color=color)
+        axA.plot(d[d.bits == 2].bits, d[d.bits == 2].auc_mean, marker="o", ms=6, ls="none",
+                 mfc="white", mec=color, mew=1.5)
+        last[cond] = d.iloc[-1]
+    centered = _nominal(results_dir, "bits_r0.04_b4-6_stefix_c.csv")
+    if centered is not None:
+        axA.errorbar(centered.bits, centered.auc_mean, yerr=centered.auc_std, marker="D", ms=5,
+                     lw=1.4, ls="--", capsize=3, color=C_C3,
+                     label="quant. + noise, DC removed")
+    two = joint[(joint.condition == "nominal") & (joint.bits == 2)]
+    if len(two):
+        axA.text(2.15, float(two.auc_mean.iloc[0]) + 0.012,
+                 "2-bit: constant output,\nnot a working model", fontsize=8, color="#555555",
+                 va="bottom")
+    axA.text(10.2, last["quant_only"].auc_mean + 0.004, "quant.\nonly", fontsize=8,
+             color="#333333", va="bottom")
+    axA.text(10.2, last["nominal"].auc_mean - 0.004, "+ nominal\nnoise", fontsize=8,
+             color="#333333", va="top")
+
+    noise_csv = results_dir / "noise.csv"
+    if noise_csv.exists():
+        c1 = pd.read_csv(noise_csv).query("arm == 'C1'")
+        if len(c1):   # 只画到 10 bit，右侧留给直接标注
+            axA.hlines(c1.iloc[0].auc_mean, 1.6, 10, color="#555555", ls="-.", lw=1.0,
+                       label=f"fp32 ({c1.iloc[0].auc_mean:.3f})")
+
+    axA.axvline(6, color=C_SPEC, ls="--", lw=1.2)
+    axA.text(6.08, 0.47, "chip spec\n6-bit", fontsize=8.5, color=C_SPEC, va="bottom")
+    axA.axhline(0.5, color="#999999", ls=":", lw=1)
+    axA.set_xticks([2, 4, 5, 6, 8, 10])
+    axA.set_xlim(1.6, 11.4)
+    axA.set_xlabel("W / S / B precision, all three together  (bits, QAT per width)")
+    axA.set_ylabel("AUC  (mean ± std, 3 seeds × 10 chips)")
+    axA.set_title("A.  Training fixed: 5-bit costs ~0.01; removing the DC rescues 4-bit",
+                  fontsize=9.5, loc="left")
+    axA.legend(fontsize=8, loc="lower right", framealpha=0.95)
+    _style(axA)
+
+    # ---------------- Panel B：只降一项 ----------------
+    ref6 = joint[(joint.condition == "nominal") & (joint.bits == 6)].iloc[0]
+    series = [
+        # (直接标注用的短名, 数据文件, 6-bit 锚点, 颜色, 线型, 图例全称)
+        ("W", "bits_r0.04_w_b4-5_stefix.csv", ref6, C_W, "-", "W  (conductance levels)"),
+        ("S", "bits_r0.04_s_b4-5_stefix.csv", ref6, C_S, "-", "S  (input D/A + output A/D)"),
+        ("B", "bits_r0.04_b_b4-5_stefix.csv", ref6, C_B, "-", "B  (bias DAC)"),
+    ]
+    centered6 = _nominal(results_dir, "bits_r0.04_b4-6_stefix_c.csv")
+    if centered6 is not None and (centered6.bits == 6).any():
+        series.append(("S, DC removed", "bits_r0.04_s_b4-5_stefix_c.csv",
+                       centered6[centered6.bits == 6].iloc[0], C_S, "--",
+                       "S, DC removed before the D/A"))
+
+    for short, fname, anchor, color, ls, label in series:
+        d = _nominal(results_dir, fname)
+        if d is None:
+            continue
+        d = pd.concat([d, anchor.to_frame().T]).astype({"bits": int}).sort_values("bits")
+        axB.errorbar(d.bits, d.auc_mean.astype(float), yerr=d.auc_std.astype(float),
+                     marker="o", ms=5, lw=1.8, ls=ls, capsize=3, color=color, label=label)
+        lo = d.iloc[0]
+        axB.text(lo.bits - 0.08, float(lo.auc_mean), short, fontsize=8,
+                 color="#333333", ha="right", va="center")
+
+    axB.axvline(6, color=C_SPEC, ls="--", lw=1.2)
+    axB.text(6.05, 0.47, "chip spec\n6-bit", fontsize=8.5, color=C_SPEC, va="bottom")
+    axB.axhline(0.5, color="#999999", ls=":", lw=1)
+    axB.set_xticks([4, 5, 6])
+    axB.set_xlim(3.3, 6.4)
+    axB.set_xlabel("precision of ONE of W / S / B  (bits; the other two at 6)")
+    axB.set_title("B.  Weights tolerate 4 bits; converters need 5 — or 4 with the DC removed",
+                  fontsize=9.5, loc="left")
+    axB.legend(fontsize=8, loc="center right", framealpha=0.95)
+    _style(axB)
+
+    fig.tight_layout()
+    out = out_dir / "fig4_bits_v2.png"
+    fig.savefig(out, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[fig4 v2] -> {out}")
+
 
 FIGURES = {1: figure1, 2: figure2, 3: figure3, 4: figure4}
 
@@ -316,7 +460,13 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/fast.yaml")
     ap.add_argument("--fig", type=int, nargs="+", default=sorted(FIGURES))
+    ap.add_argument("--tag", default=None,
+                    help="如 stefix：图 2、图 3 读带 tag 的 CSV、输出带 tag 的图（原图不动）")
     args = ap.parse_args()
+    global TAG
+    if args.tag:
+        TAG = f"_{args.tag}"
+        args.fig = [n for n in args.fig if n in (2, 3)]
 
     cfg = load_config(args.config)
     results_dir = Path(cfg.output.results_dir)

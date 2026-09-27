@@ -93,8 +93,9 @@ def layer_count(depth: int) -> int:
     return 2 * depth + 2
 
 
-def run_name(arch: str, sigma_read: float, depth: int, seed: int) -> str:
-    return f"arch_{arch}_r{sigma_read:g}_d{depth}_s{seed}"
+def run_name(arch: str, sigma_read: float, depth: int, seed: int, tag: str | None = None) -> str:
+    """``tag`` 区分代码版本或物理模型不同的重训（如 STE 修复后），不覆盖旧 checkpoint。"""
+    return f"arch_{arch}_r{sigma_read:g}_d{depth}{'_' + tag if tag else ''}_s{seed}"
 
 
 def make_params(arch: str, sigma_read: float) -> DeviceParams:
@@ -102,11 +103,12 @@ def make_params(arch: str, sigma_read: float) -> DeviceParams:
                         sigma_read=sigma_read, adc_mode=arch)
 
 
-def build_jobs(parts, seeds, sigma_reads, depth_sigma_reads, depths_b) -> list[dict]:
+def build_jobs(parts, seeds, sigma_reads, depth_sigma_reads, depths_b,
+               tag: str | None = None) -> list[dict]:
     jobs, seen = [], set()
 
     def add(part, arch, sr, depth, seed):
-        name = run_name(arch, sr, depth, seed)
+        name = run_name(arch, sr, depth, seed, tag)
         if name not in seen:
             seen.add(name)
             jobs.append({"part": part, "arch": arch, "sigma_read": sr,
@@ -139,7 +141,9 @@ def paired_diff(runs: pd.DataFrame, depth: int) -> pd.DataFrame | None:
     return per.groupby("sigma_read")["diff"].agg(["mean", "std", "count"])
 
 
-def evaluate_all(base, results_dir: Path, jobs: list[dict], n_chips: int, factor: float) -> None:
+def evaluate_all(base, results_dir: Path, jobs: list[dict], n_chips: int, factor: float,
+                 tag: str | None = None) -> None:
+    suffix = f"_{tag}" if tag else ""
     device = get_device()
     mel, meta = load_cache(cache_prefix(base.data.cache_dir, TARGET["n_mels"], "test"))
     mids, max_fpr = list(base.eval.machine_ids), float(base.eval.max_fpr)
@@ -167,7 +171,7 @@ def evaluate_all(base, results_dir: Path, jobs: list[dict], n_chips: int, factor
         return
 
     runs = pd.DataFrame(rows)
-    runs.to_csv(results_dir / "arch_runs.csv", index=False)
+    runs.to_csv(results_dir / f"arch{suffix}_runs.csv", index=False)
 
     groups: dict = {}
     for j in jobs:
@@ -178,9 +182,9 @@ def evaluate_all(base, results_dir: Path, jobs: list[dict], n_chips: int, factor
 
     keys = ["depth", "sigma_read", "arch"]
     agg = aggregate(runs, keys)
-    agg.to_csv(results_dir / "arch.csv", index=False)
+    agg.to_csv(results_dir / f"arch{suffix}.csv", index=False)
     bar = "=" * 96
-    print(f"\n{bar}\n结果 -> {results_dir / 'arch.csv'}\n{bar}")
+    print(f"\n{bar}\n结果 -> {results_dir / f'arch{suffix}.csv'}\n{bar}")
     print_agg(agg, keys)
 
     for depth in sorted(runs.depth.unique()):
@@ -202,6 +206,7 @@ def main() -> int:
     ap.add_argument("--depth-sigma-reads", type=float, nargs="+", default=DEPTH_SIGMA_READS)
     ap.add_argument("--depths-b", type=int, nargs="+", default=DEPTHS_B)
     ap.add_argument("--n-chips", type=int, default=N_CHIPS)
+    ap.add_argument("--tag", default=None, help="加进 run 名与结果文件名（如 --tag stefix）")
     ap.add_argument("--shard", default=None, help="K/N：只训练第 K 份（0 起），不评估")
     ap.add_argument("--eval-only", action="store_true", help="不训练，评估已有 checkpoint 并聚合")
     ap.add_argument("--dry-run", action="store_true")
@@ -212,7 +217,7 @@ def main() -> int:
     base = load_config(args.config)
     results_dir = Path(base.output.results_dir)
     jobs = build_jobs(args.part, args.seeds, args.sigma_reads,
-                      args.depth_sigma_reads, args.depths_b)
+                      args.depth_sigma_reads, args.depths_b, args.tag)
     missing_ref = sorted(set(args.depth_sigma_reads) - set(args.sigma_reads))
     if "B" in args.part and missing_ref:
         print(f"[警告] σ_read={missing_ref} 不在 Part A 的网格里，"
@@ -244,7 +249,7 @@ def main() -> int:
             print("\n本分片训练完成。所有分片结束后运行 --eval-only 统一评估。")
             return 0
 
-    evaluate_all(base, results_dir, jobs, args.n_chips, args.converge_factor)
+    evaluate_all(base, results_dir, jobs, args.n_chips, args.converge_factor, args.tag)
     return 0
 
 

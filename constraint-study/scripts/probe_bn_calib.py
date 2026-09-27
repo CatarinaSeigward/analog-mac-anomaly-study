@@ -94,7 +94,9 @@ def main() -> int:
     ap.add_argument("--calib-windows", type=int, nargs="+", default=[2048, 20480],
                     help="每颗芯片标定用的正常窗口数。2048 ≈ 6 个 10 秒文件 ≈ 1 分钟音频")
     ap.add_argument("--n-chips", type=int, default=N_CHIPS)
+    ap.add_argument("--tag", default=None, help="读带 tag 的 arch run（如 stefix），结果文件名同样加 tag")
     args = ap.parse_args()
+    tag = f"_{args.tag}" if args.tag else ""
 
     base = load_config(args.config)
     device = get_device()
@@ -108,7 +110,7 @@ def main() -> int:
         p = DeviceParams(sigma_prog=SIGMA_PROG, sigma_d2d=SIGMA_D2D,
                          sigma_read=sr, adc_mode=arch)
         for seed in SEEDS:
-            name = f"arch_{arch}_r{sr:g}_d2_s{seed}"
+            name = f"arch_{arch}_r{sr:g}_d2{tag}_s{seed}"
             model = load_model(target_cfg(base, name, seed), results_dir, name, device, p)
             set_params(model, p)
             bn = BNState(model)
@@ -127,12 +129,12 @@ def main() -> int:
         print(f"  {arch:<10} σ_read={sr:<5g} 完成 ({time.time() - t0:.0f}s)")
 
     runs = pd.DataFrame(rows)
-    runs.to_csv(results_dir / "bn_calib_runs.csv", index=False)
+    runs.to_csv(results_dir / f"bn_calib{tag}_runs.csv", index=False)
     agg = (runs.groupby(["arch", "sigma_read", "calib_windows"])
                .agg(n=("auc", "size"), auc_mean=("auc", "mean"),
                     auc_std=("auc", "std"), auc_min=("auc", "min"))
                .reset_index())
-    agg.to_csv(results_dir / "bn_calib.csv", index=False)
+    agg.to_csv(results_dir / f"bn_calib{tag}.csv", index=False)
 
     print("\n逐片 BN 重标定（calib_windows = 0 表示不标定，沿用训练时的 running stats）")
     t = agg.copy()

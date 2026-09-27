@@ -31,6 +31,9 @@
 
 产出
   results/bits_r0.04_runs.csv / results/bits_r0.04.csv    （--train-sigma-read 0 时为 bits_runs.csv / bits.csv）
+  单项扫描或非默认位宽列表另写文件，不覆盖图 4 的数据，例如
+    --bits 5                    -> bits_r0.04_b5.csv
+    --sweep-only w --bits 4 5   -> bits_r0.04_w_b4-5.csv
 """
 
 from __future__ import annotations
@@ -44,6 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd  # noqa: E402
 import torch  # noqa: E402
+from omegaconf import OmegaConf  # noqa: E402
 
 from src.evaluate_analog import evaluate_chips  # noqa: E402
 from src.experiment import (  # noqa: E402
@@ -70,6 +74,23 @@ def suffix(train_sr: float) -> str:
     return "" if train_sr == 0 else f"_r{train_sr:g}"
 
 
+def out_tag(train_sr: float, only: str | None, bits: list[int], run_tag: str | None = None) -> str:
+    """结果文件名后缀。
+
+    只有默认位宽列表的 W/S/B 同步扫描写回 ``bits{_r}.csv``（图 4 的数据源）；
+    单项扫描、补点、带 ``--tag`` 的运行各写各的文件 —— 评估的 C2C 噪声不固定种子，
+    重评会让已发表的数字漂移。
+    """
+    tag = suffix(train_sr)
+    if only:
+        tag += f"_{only}"
+    if sorted(bits) != BITS:
+        tag += "_b" + "-".join(str(b) for b in sorted(bits))
+    if run_tag:
+        tag += f"_{run_tag}"
+    return tag
+
+
 def bit_kwargs(bits: int, only: str | None) -> dict:
     if only is None:
         return {"w_bits": bits, "s_bits": bits, "b_bits": bits}
@@ -78,8 +99,11 @@ def bit_kwargs(bits: int, only: str | None) -> dict:
     return kw
 
 
-def run_name(bits: int, seed: int, only: str | None, train_sr: float) -> str:
-    return f"bits_{only or 'wsb'}{bits}{suffix(train_sr)}_s{seed}"
+def run_name(bits: int, seed: int, only: str | None, train_sr: float,
+             run_tag: str | None = None) -> str:
+    """``run_tag`` 区分代码版本不同的重训（如 STE 修复后），不覆盖旧 checkpoint。"""
+    tag = f"_{run_tag}" if run_tag else ""
+    return f"bits_{only or 'wsb'}{bits}{suffix(train_sr)}{tag}_s{seed}"
 
 
 def make_params(bits: int, only: str | None, sigma_prog: float, sigma_d2d: float,
@@ -94,7 +118,8 @@ def conditions(train_sr: float) -> dict[str, tuple[float, float, float]]:
 
 
 def evaluate_all(base, results_dir: Path, jobs: list[dict], only: str | None,
-                 train_sr: float, n_chips: int, factor: float) -> None:
+                 train_sr: float, n_chips: int, factor: float,
+                 run_tag: str | None = None) -> None:
     device = get_device()
     mel, meta = load_cache(cache_prefix(base.data.cache_dir, TARGET["n_mels"], "test"))
     mids, max_fpr = list(base.eval.machine_ids), float(base.eval.max_fpr)
@@ -124,7 +149,7 @@ def evaluate_all(base, results_dir: Path, jobs: list[dict], only: str | None,
     if not rows:
         return
 
-    tag = suffix(train_sr)
+    tag = out_tag(train_sr, only, sorted({j["bits"] for j in jobs}), run_tag)
     runs = pd.DataFrame(rows)
     runs.to_csv(results_dir / f"bits{tag}_runs.csv", index=False)
 
@@ -159,6 +184,10 @@ def main() -> int:
                     help="训练（及 nominal 评估）时的读噪声。0 = 复现第一次运行")
     ap.add_argument("--sweep-only", choices=["w", "s", "b"], default=None,
                     help="只扫某一项位宽，其余固定在 6-bit（敏感度分析用）")
+    ap.add_argument("--tag", default=None,
+                    help="加进 run 名与结果文件名，区分代码版本不同的重训（如 --tag stefix）")
+    ap.add_argument("--center", action="store_true",
+                    help="D/A 前减去训练集逐维均值（feature.center=true）；必须同时给 --tag")
     ap.add_argument("--shard", default=None, help="K/N：只训练第 K 份（0 起），不评估")
     ap.add_argument("--eval-only", action="store_true", help="不训练，评估已有 checkpoint 并聚合")
     ap.add_argument("--dry-run", action="store_true")
@@ -167,9 +196,13 @@ def main() -> int:
     args = ap.parse_args()
 
     base = load_config(args.config)
+    if args.center:
+        if not args.tag:
+            ap.error("--center 会改变模型，必须配 --tag，否则会与未去直流的 run 重名")
+        base = OmegaConf.merge(base, {"feature": {"center": True}})
     results_dir = Path(base.output.results_dir)
     only, train_sr = args.sweep_only, args.train_sigma_read
-    jobs = [{"bits": b, "seed": s, "name": run_name(b, s, only, train_sr)}
+    jobs = [{"bits": b, "seed": s, "name": run_name(b, s, only, train_sr, args.tag)}
             for b in args.bits for s in args.seeds]
 
     if not args.eval_only:
@@ -197,7 +230,8 @@ def main() -> int:
             print("\n本分片训练完成。所有分片结束后运行 --eval-only 统一评估。")
             return 0
 
-    evaluate_all(base, results_dir, jobs, only, train_sr, args.n_chips, args.converge_factor)
+    evaluate_all(base, results_dir, jobs, only, train_sr, args.n_chips, args.converge_factor,
+                 args.tag)
     return 0
 
 

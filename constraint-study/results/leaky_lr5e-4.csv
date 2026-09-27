@@ -1,0 +1,4 @@
+kind,features,n_seeds,auc_mean,auc_std,pauc_mean,val_min,val_final
+fp32,frames,3,0.7295,0.0187,0.6107,1.4104,1.4404
+fp32,tau128,3,0.7506,0.014,0.6025,0.332,0.3353
+fp32,tau512,3,0.7077,0.0167,0.5861,0.5413,0.5452

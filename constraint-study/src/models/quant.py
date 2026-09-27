@@ -38,6 +38,34 @@ def round_ste(x: torch.Tensor) -> torch.Tensor:
     return _RoundSTE.apply(x)
 
 
+class _RoundClampSTE(torch.autograd.Function):
+    """``clamp(round(v), -qmax, qmax)``，梯度只在**确实被裁剪**的元素上置零。
+
+    ⚠️ 更正（2026-09-22）：旧实现是 ``torch.clamp(round_ste(v), -qmax, qmax)``。
+       clamp 作用在取整之后，而 torch 的 clamp 在输入恰好等于边界时梯度为 0，
+       所以整个最高电平带（|v| ∈ [qmax-0.5, qmax]）都没有梯度 —— 并非只是
+       "越界的值"。max-abs 尺度下最大元素永远在这个带里；所有元素幅值相同时
+       （从零初始化的 bias 经 Adam 第一步之后正是如此）整个张量梯度为 0、从此冻结。
+       输出层 bias 因此在全部 QAT 训练中基本不学习，低位宽下权重也会被冻在
+       最高电平，训练卡在平台上。见 tests/test_quant.py、tests/test_analog.py 的回归测试。
+    """
+
+    @staticmethod
+    def forward(ctx, v: torch.Tensor, qmax: int) -> torch.Tensor:  # noqa: D102
+        r = torch.round(v)
+        ctx.save_for_backward(r.abs() <= qmax)     # 未被裁剪 ⇔ 取整结果在范围内
+        return torch.clamp(r, -qmax, qmax)
+
+    @staticmethod
+    def backward(ctx, grad_out: torch.Tensor):  # noqa: D102
+        (inside,) = ctx.saved_tensors
+        return grad_out * inside.to(grad_out.dtype), None
+
+
+def round_clamp_ste(v: torch.Tensor, qmax: int) -> torch.Tensor:
+    return _RoundClampSTE.apply(v, qmax)
+
+
 def grad_scale(x: torch.Tensor, scale: float) -> torch.Tensor:
     """前向不变、反向梯度乘以 ``scale``（LSQ 用来稳定步长的梯度）。"""
     return (x - x * scale).detach() + x * scale
@@ -63,7 +91,7 @@ def quantize_ste(x: torch.Tensor, bits: int,
     qmax = qmax_of(bits)
     if scale is None:
         scale = x.detach().abs().amax().clamp(min=1e-12) / qmax
-    return torch.clamp(round_ste(x / scale), -qmax, qmax) * scale
+    return round_clamp_ste(x / scale, qmax) * scale
 
 
 def per_tile_absmax(w: torch.Tensor, tile: int) -> torch.Tensor:
@@ -131,7 +159,7 @@ class LSQQuantizer(nn.Module):
         qmax = qmax_of(self.bits)
         g = 1.0 / math.sqrt(max(x.numel() * qmax, 1))
         s = grad_scale(self.step.abs().clamp(min=1e-12), g)
-        return torch.clamp(round_ste(x / s), -qmax, qmax) * s
+        return round_clamp_ste(x / s, qmax) * s
 
     def extra_repr(self) -> str:
         return f"bits={self.bits}"

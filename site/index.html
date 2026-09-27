@@ -1,0 +1,1004 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Six-Tile Anomaly Detector</title>
+<meta name="description" content="A simulation study: the MLPerf Tiny anomaly detector compressed from 380 to 6 tiles of a 30 × 30, 6-bit analog MAC array, and what the silicon and the training must each guarantee.">
+<script>
+  try { const t = new URLSearchParams(location.search).get("theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,500..800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+:root {
+  color-scheme: light;
+  --paper: #eef1f4;
+  --sheet: #fbfcfd;
+  --ink: #101922;
+  --ink-2: #44515e;
+  --muted: #6b7784;
+  --rule: #d6dde4;
+  --rule-strong: #aeb9c4;
+  --accent: #1d5fbf;
+  --accent-wash: #e4edf9;
+  --accent-edge: #9dbbe6;
+  --s-base: #eb6834;
+  --s-prop: #2a78d6;
+  --critical: #c93434;
+  --critical-wash: #fbeceb;
+  --tile-ref: #b4bfca;
+  --tile-hot: #eb6834;
+  --tile-ours: #2a78d6;
+  --hm-pos: #2a78d6;
+  --hm-neg: #e34948;
+  --hm-mid: #e8ecf0;
+  --hatch: #d6dde4;
+  --shadow: 0 1px 2px rgba(16, 25, 34, 0.05), 0 8px 28px rgba(16, 25, 34, 0.06);
+
+  --f-display: "Archivo", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+  --f-body: "IBM Plex Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --paper: #0c1115;
+    --sheet: #131a20;
+    --ink: #e8edf2;
+    --ink-2: #aeb9c4;
+    --muted: #85919d;
+    --rule: #25303a;
+    --rule-strong: #3d4a57;
+    --accent: #6ea8f3;
+    --accent-wash: #132438;
+    --accent-edge: #2f5687;
+    --s-base: #d95926;
+    --s-prop: #3987e5;
+    --critical: #e66767;
+    --critical-wash: #2a191b;
+    --tile-ref: #4a5764;
+    --tile-hot: #d95926;
+    --tile-ours: #3987e5;
+    --hm-pos: #3987e5;
+    --hm-neg: #e66767;
+    --hm-mid: #222b33;
+    --hatch: #2a343e;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 28px rgba(0, 0, 0, 0.25);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #0c1115;
+  --sheet: #131a20;
+  --ink: #e8edf2;
+  --ink-2: #aeb9c4;
+  --muted: #85919d;
+  --rule: #25303a;
+  --rule-strong: #3d4a57;
+  --accent: #6ea8f3;
+  --accent-wash: #132438;
+  --accent-edge: #2f5687;
+  --s-base: #d95926;
+  --s-prop: #3987e5;
+  --critical: #e66767;
+  --critical-wash: #2a191b;
+  --tile-ref: #4a5764;
+  --tile-hot: #d95926;
+  --tile-ours: #3987e5;
+  --hm-pos: #3987e5;
+  --hm-neg: #e66767;
+  --hm-mid: #222b33;
+  --hatch: #2a343e;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 28px rgba(0, 0, 0, 0.25);
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 400 16px/1.55 var(--f-body);
+  padding-block: 24px 48px;
+  padding-inline: max(16px, env(safe-area-inset-left, 0px));
+}
+.page { max-width: 1180px; margin: 0 auto; display: grid; gap: 56px; }
+a { color: var(--accent); text-underline-offset: 2px; }
+a:focus-visible, button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px;
+}
+h1, h2, h3 { margin: 0; text-wrap: balance; }
+p { margin: 0; }
+.mono { font-family: var(--f-mono); }
+.eyebrow {
+  font: 500 11.5px/1.3 var(--f-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.scroll-x { overflow-x: auto; overscroll-behavior-x: contain; }
+/* Grid tracks must not grow to fit the wide diagrams; those scroll inside their own container. */
+.page, .poster, .section, .plot, .budget-block { grid-template-columns: minmax(0, 1fr); }
+.page > *, .poster > *, .section > *, .plot > * { min-width: 0; }
+sub { font-size: 0.72em; }
+
+/* ---------- Poster: the datasheet front page ---------- */
+.poster {
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  box-shadow: var(--shadow);
+  padding: clamp(18px, 3vw, 36px);
+  display: grid;
+  gap: 30px;
+}
+.strip {
+  display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 24px;
+  padding-bottom: 12px; border-bottom: 2px solid var(--ink);
+}
+.masthead {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+  gap: 28px 48px;
+  align-items: start;
+}
+h1 {
+  font-family: var(--f-display);
+  font-stretch: 78%;
+  font-weight: 750;
+  font-size: clamp(30px, 4.1vw, 50px);
+  line-height: 1.02;
+  letter-spacing: -0.01em;
+}
+.lede { margin-top: 16px; max-width: 62ch; color: var(--ink-2); font-size: 17px; }
+.lede strong { color: var(--ink); font-weight: 600; }
+.keynums { margin: 0; display: grid; gap: 14px; }
+.keynums > div {
+  display: grid; grid-template-columns: 1fr; gap: 2px;
+  padding-top: 10px; border-top: 1px solid var(--rule);
+}
+.keynums dt { font: 500 11px/1.3 var(--f-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-2); }
+.keynums dd {
+  margin: 0; font-family: var(--f-display); font-stretch: 82%; font-weight: 700;
+  font-size: clamp(26px, 2.8vw, 34px); line-height: 1.1;
+}
+.keynums dd .from { color: var(--muted); font-weight: 600; }
+.keynums dd .arrow { color: var(--muted); font-weight: 500; padding-inline: 4px; }
+.keynums small { display: block; font: 400 13px/1.4 var(--f-body); color: var(--ink-2); margin-top: 2px; }
+
+.fig-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin-bottom: 14px; }
+.fig-head .eyebrow { color: var(--ink); font-weight: 600; }
+.fig-head p { color: var(--ink-2); font-size: 14.5px; }
+
+/* Tile budget */
+.budget-row { display: flex; align-items: flex-start; gap: 22px; padding-bottom: 4px; min-width: max-content; }
+.budget-block { display: grid; gap: 10px; }
+.budget-block p { font-size: 13.5px; color: var(--ink-2); max-width: 44ch; }
+.budget-block p b { color: var(--ink); font-weight: 600; }
+.budget-arrow { font: 500 22px/1 var(--f-mono); color: var(--muted); align-self: center; margin-top: -40px; }
+.budget-svg { display: block; overflow: visible; }
+.budget-svg .layer rect { fill: var(--tile-ref); transition: fill 0.15s; }
+.budget-svg .layer:hover rect, .budget-svg .layer:focus rect { fill: var(--tile-hot); }
+.budget-svg .layer:focus { outline: none; }
+.budget-svg.ours .layer rect { fill: var(--tile-ours); }
+.budget-svg.ours .layer:hover rect, .budget-svg.ours .layer:focus rect { fill: var(--tile-hot); }
+.budget-note { font: 400 12px/1.4 var(--f-mono); color: var(--muted); margin-top: 8px; }
+
+/* Signal chain */
+.chain { --tile: clamp(54px, 5.4vw, 70px); }
+.chain-diagram {
+  display: flex; align-items: center; gap: 0;
+  padding: 14px 4px 6px; min-width: max-content;
+}
+.node { position: relative; display: grid; justify-items: center; gap: 6px; text-align: center; }
+.node-title { font: 600 13px/1.2 var(--f-body); }
+.node-sub { font: 400 11.5px/1.3 var(--f-mono); color: var(--ink-2); }
+.node.src { width: 92px; }
+.node.src svg { width: 62px; height: 30px; }
+.node.src path { fill: none; stroke: var(--ink-2); stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
+.node.fe { width: 112px; }
+.fe-grid {
+  display: grid; grid-template-columns: repeat(5, 11px); grid-template-rows: repeat(6, 11px); gap: 2px;
+  padding: 5px; border: 1px solid var(--rule-strong); border-radius: 3px; background: var(--sheet);
+}
+.fe-grid span { background: var(--accent-wash); border: 1px solid var(--accent-edge); border-radius: 1px; }
+.node.score { width: 132px; }
+.score-box {
+  font: 500 15px/1 var(--f-mono); padding: 12px 10px; border: 1px solid var(--rule-strong);
+  border-radius: 4px; background: var(--sheet);
+}
+.wire { width: 26px; height: 2px; background: var(--rule-strong); position: relative; flex: none; }
+.wire::after, .awire::after {
+  content: ""; position: absolute; right: -1px; top: 50%; transform: translateY(-50%);
+  border-left: 6px solid var(--rule-strong); border-top: 4px solid transparent; border-bottom: 4px solid transparent;
+}
+.analog {
+  position: relative; flex: none;
+  background: var(--accent-wash);
+  border: 1px dashed var(--accent-edge);
+  border-radius: 6px;
+  padding: 30px 12px 10px;
+  margin-inline: 2px;
+}
+.analog-label {
+  position: absolute; top: 9px; left: 12px; right: 12px;
+  font: 500 10.5px/1.2 var(--f-mono); letter-spacing: 0.07em; text-transform: uppercase; color: var(--accent);
+}
+.analog-grid {
+  display: grid;
+  grid-template-columns: auto 16px var(--tile) 16px var(--tile) 16px var(--tile) 16px var(--tile) 16px var(--tile) 16px var(--tile) 16px auto;
+  align-items: center; row-gap: 6px;
+}
+.awire { height: 2px; background: var(--accent); position: relative; align-self: center; margin-top: -15px; }
+.awire::after { border-left-color: var(--accent); }
+.conv {
+  position: relative; display: grid; justify-items: center; gap: 2px;
+  padding: 10px 8px; border: 1px solid var(--rule-strong); border-radius: 4px; background: var(--sheet);
+  margin-top: -15px;
+}
+.conv-name { font: 600 13px/1 var(--f-mono); }
+.tile { position: relative; display: grid; gap: 4px; justify-items: center; }
+.tile canvas {
+  width: var(--tile); height: var(--tile); display: block;
+  image-rendering: pixelated; image-rendering: crisp-edges;
+  border: 1px solid var(--rule-strong);
+  background:
+    repeating-linear-gradient(135deg, var(--hatch) 0 1px, transparent 1px 5px),
+    var(--sheet);
+}
+.tile-label { font: 400 11px/1 var(--f-mono); color: var(--ink-2); white-space: nowrap; }
+.bracket {
+  border-top: 1.5px solid var(--rule-strong); padding-top: 5px; text-align: center;
+  font: 500 10.5px/1.2 var(--f-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2);
+  margin-inline: 4px;
+}
+.bracket.enc { grid-column: 3 / 8; }
+.bracket.dec { grid-column: 9 / 14; }
+.badge {
+  position: absolute; top: -9px; left: -9px; z-index: 1;
+  width: 19px; height: 19px; display: grid; place-items: center;
+  font: 600 11px/1 var(--f-mono); color: var(--sheet); background: var(--ink); border-radius: 3px;
+}
+.awire .badge { left: -2px; top: -26px; }
+.hm-legend { display: flex; align-items: center; gap: 8px; margin-top: 10px; font: 400 11.5px/1.3 var(--f-mono); color: var(--ink-2); flex-wrap: wrap; }
+.hm-legend .bar { width: 120px; height: 9px; border-radius: 2px; border: 1px solid var(--rule); }
+.hm-legend .unused {
+  width: 14px; height: 14px; border: 1px solid var(--rule-strong);
+  background: repeating-linear-gradient(135deg, var(--hatch) 0 1px, transparent 1px 5px), var(--sheet);
+}
+
+.callouts {
+  list-style: none; margin: 0; padding: 0;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px 28px;
+}
+.callouts li { position: relative; padding: 14px 0 0 30px; border-top: 1px solid var(--rule); }
+.callouts .badge { top: 14px; left: 0; }
+.callouts h3 { font: 600 16px/1.3 var(--f-body); margin-bottom: 6px; }
+.callouts p { font-size: 14px; line-height: 1.5; color: var(--ink-2); }
+.callouts p.so { margin-top: 8px; color: var(--ink); font-weight: 500; }
+.callouts p.so span {
+  display: block; font: 500 10.5px/1.4 var(--f-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent);
+}
+.callouts .num { font-family: var(--f-mono); font-size: 12.5px; color: var(--ink); }
+
+.poster-foot {
+  display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 24px;
+  padding-top: 12px; border-top: 1px solid var(--rule);
+  font: 400 12px/1.4 var(--f-mono); color: var(--ink-2);
+}
+.poster-foot b { color: var(--critical); font-weight: 600; }
+
+/* ---------- Sections below the poster ---------- */
+.section { display: grid; gap: 18px; }
+.section-head { display: grid; gap: 8px; max-width: 72ch; }
+h2 {
+  font-family: var(--f-display); font-stretch: 82%; font-weight: 720;
+  font-size: clamp(24px, 2.6vw, 32px); line-height: 1.1;
+}
+.section-head p { color: var(--ink-2); }
+
+.plot {
+  background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px;
+  padding: clamp(16px, 2.4vw, 28px); display: grid; gap: 18px;
+}
+.control { display: grid; gap: 8px; max-width: 620px; }
+.control-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.control label { font-weight: 600; font-size: 15px; }
+.control output { font: 600 22px/1 var(--f-mono); font-variant-numeric: tabular-nums; }
+.control output small { font-size: 13px; font-weight: 400; color: var(--ink-2); margin-left: 6px; }
+.slider-row { display: flex; align-items: center; gap: 14px; }
+.slider-wrap { flex: 1; display: grid; gap: 4px; }
+input[type="range"] { width: 100%; margin: 0; accent-color: var(--accent); height: 22px; cursor: pointer; }
+.ticks { display: flex; justify-content: space-between; padding-inline: 2px; font: 400 11.5px/1 var(--f-mono); color: var(--ink-2); }
+.ticks span { width: 0; display: flex; justify-content: center; white-space: nowrap; }
+.play {
+  flex: none; font: 600 13px/1 var(--f-body); color: var(--ink); background: var(--sheet);
+  border: 1px solid var(--rule-strong); border-radius: 4px; padding: 8px 12px; cursor: pointer;
+}
+.play:hover { border-color: var(--accent); color: var(--accent); }
+
+.strip-row { display: grid; gap: 2px; }
+.strip-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 16px; }
+.strip-label { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14.5px; }
+.swatch { width: 11px; height: 11px; border-radius: 50%; flex: none; }
+.strip-stat { font: 400 12.5px/1.4 var(--f-mono); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.strip-stat .bad { color: var(--critical); font-weight: 600; }
+.strip-stat .ok { color: var(--ink); font-weight: 600; }
+.strip-svg, .axis-svg { display: block; width: 100%; overflow: visible; }
+.strip-svg .zone { fill: var(--critical-wash); }
+.strip-svg .chance { stroke: var(--critical); stroke-width: 1; stroke-dasharray: 2 3; opacity: 0.7; }
+.strip-svg .ref { stroke: var(--ink-2); stroke-width: 1; stroke-dasharray: 5 4; }
+.strip-svg .mid { stroke: var(--rule); stroke-width: 1; }
+.strip-svg circle { stroke: var(--sheet); stroke-width: 1.5; transition: transform 0.75s cubic-bezier(0.2, 0.7, 0.2, 1); cursor: default; }
+.strip-svg circle:hover { stroke: var(--ink); }
+.axis-svg line { stroke: var(--rule-strong); }
+.axis-svg text { fill: var(--ink-2); font: 400 11.5px var(--f-mono); }
+.strip-svg text.zone-label { fill: var(--critical); font: 500 11.5px var(--f-mono); }
+.axis-svg line.ref { stroke: var(--ink-2); stroke-dasharray: 3 3; }
+.axis-title { font: 400 12px/1.4 var(--f-mono); color: var(--muted); }
+.note {
+  font-size: 14.5px; color: var(--ink); padding: 10px 14px; border-left: 3px solid var(--accent);
+  background: var(--accent-wash); border-radius: 0 4px 4px 0; max-width: 78ch;
+}
+details.numbers summary { cursor: pointer; font: 500 13px/1.4 var(--f-body); color: var(--ink-2); }
+details.numbers[open] summary { margin-bottom: 10px; }
+table { border-collapse: collapse; font-size: 13.5px; width: 100%; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font: 500 11px/1.3 var(--f-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2); border-bottom: 1.5px solid var(--ink); }
+td.n { font-family: var(--f-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* Requirements table */
+.spec { background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; }
+.spec table { min-width: 760px; }
+.spec td:first-child { font: 500 12px/1.4 var(--f-mono); color: var(--ink-2); white-space: nowrap; }
+.spec td.req { font-weight: 600; }
+.spec tr.group td { font: 600 11px/1.3 var(--f-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); background: var(--accent-wash); }
+
+/* Questions and limits */
+.two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px 40px; }
+.qs { margin: 0; padding: 0; list-style: none; display: grid; gap: 16px; counter-reset: q; }
+.qs li { counter-increment: q; display: grid; grid-template-columns: 30px 1fr; gap: 2px 8px; }
+.qs li::before { content: counter(q); font: 600 20px/1.2 var(--f-display); font-stretch: 80%; color: var(--accent); grid-row: span 2; }
+.qs b { font-weight: 600; }
+.qs span { color: var(--ink-2); font-size: 14.5px; }
+.limits { margin: 0; padding-left: 18px; display: grid; gap: 8px; color: var(--ink-2); font-size: 14.5px; }
+.limits b { color: var(--ink); font-weight: 600; }
+h3.col-title { font: 600 12px/1.3 var(--f-mono); letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 14px; }
+
+.foot {
+  display: grid; gap: 14px; padding-top: 18px; border-top: 2px solid var(--ink);
+}
+.links { display: flex; flex-wrap: wrap; gap: 8px 22px; font-weight: 500; }
+.foot p { font-size: 13.5px; color: var(--ink-2); max-width: 90ch; }
+.contact { font-family: var(--f-mono); font-size: 13.5px; color: var(--ink); user-select: all; }
+
+/* Tooltip */
+.tip {
+  position: fixed; z-index: 10; pointer-events: none; max-width: 280px;
+  background: var(--ink); color: var(--sheet); border-radius: 4px;
+  padding: 7px 10px; font: 400 12.5px/1.45 var(--f-body);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+}
+.tip b { font-weight: 600; }
+.tip .mono { font-size: 12px; }
+
+.no-data .needs-data { display: none; }
+.data-missing { display: none; }
+.no-data .data-missing { display: block; }
+
+@media (max-width: 820px) {
+  .masthead { grid-template-columns: 1fr; }
+  .page { gap: 40px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .strip-svg circle { transition: none; }
+}
+</style>
+</head>
+<body>
+<main class="page">
+
+  <!-- ======================= Poster ======================= -->
+  <section class="poster" id="poster" aria-labelledby="title">
+    <div class="strip">
+      <span class="eyebrow">Simulation study · Analog in-memory inference · 30 × 30 array · 6-bit W / S / B</span>
+      <span class="eyebrow">Kaiwen Lin · Version 2 · 23 Sep 2026</span>
+    </div>
+
+    <header class="masthead">
+      <div>
+        <h1 id="title">An acoustic anomaly detector in six 30&nbsp;×&nbsp;30&nbsp;tiles</h1>
+        <p class="lede">The MLPerf Tiny anomaly detector needs <strong>380 tiles</strong>. I compressed it to <strong>6</strong>, one per layer,
+          and simulated it on a 6-bit analog MAC array with no A/D between hidden layers. It keeps <span data-k="margin"></span> of the full
+          model's margin over chance, and the analog hardware adds no measurable loss, provided the model is trained for the chip.</p>
+      </div>
+      <dl class="keynums needs-data">
+        <div>
+          <dt>30 × 30 tiles</dt>
+          <dd><span class="from" data-k="ref.tiles"></span><span class="arrow">→</span><span data-k="target.tiles"></span></dd>
+          <small><span data-k="ref.params"></span> → <span data-k="target.params"></span> parameters</small>
+        </div>
+        <div>
+          <dt>Detection AUC · ToyCar</dt>
+          <dd><span class="from" data-k="ref.auc"></span><span class="arrow">→</span><span class="from" data-k="target.auc_fp32"></span><span class="arrow">→</span><span data-k="target.auc_chip"></span></dd>
+          <small>Full model → 6 tiles in fp32 → 6 tiles on the simulated analog chip. Shrinking costs <span data-k="shrink"></span>;
+            the chip adds nothing measurable (fp32 runs of the 6-tile model: <span data-k="fp32range"></span>).</small>
+        </div>
+        <div>
+          <dt>Chips worse than a coin flip · 3 % programming error</dt>
+          <dd><span class="from" data-k="bad3n"></span><span class="arrow">→</span><span data-k="good3n"></span></dd>
+          <small>Out of <span data-k="n3"></span> simulated chips: trained the usual way → trained with the chip's errors simulated.</small>
+        </div>
+      </dl>
+    </header>
+
+    <figure class="budget needs-data" style="margin:0">
+      <div class="fig-head">
+        <span class="eyebrow">Tile budget</span>
+        <p>Every square is one 30 × 30 array, both models at the same scale. Rows are inputs, columns are outputs.</p>
+      </div>
+      <div class="scroll-x">
+        <div class="budget-row">
+          <div class="budget-block">
+            <svg class="budget-svg" id="ref-tiles" role="img" aria-label="Reference model: 10 layers, 380 tiles"></svg>
+            <p><b>MLPerf Tiny reference.</b> 10 layers, 380 tiles. Layer 1 alone takes 22 × 5 = 110 tiles, and on every
+              output wire 22 tiles add their currents, each with its own errors.</p>
+          </div>
+          <span class="budget-arrow" aria-hidden="true">→</span>
+          <div class="budget-block">
+            <svg class="budget-svg ours" id="our-tiles" role="img" aria-label="This study: 6 layers, 6 tiles"></svg>
+            <p><b>This study.</b> 6 layers, one tile each. No layer is split.</p>
+          </div>
+        </div>
+      </div>
+    </figure>
+
+    <figure class="chain needs-data" style="margin:0">
+      <div class="fig-head">
+        <span class="eyebrow">Signal chain</span>
+        <p>The 6-tile model on the chip. Each tile shows the trained 6-bit weight codes of one layer.</p>
+      </div>
+      <div class="scroll-x">
+        <div class="chain-diagram">
+          <div class="node src">
+            <svg viewBox="0 0 64 30" aria-hidden="true"><path d="M2 15 L7 9 L11 21 L15 5 L19 25 L23 8 L27 22 L31 11 L35 19 L39 13 L43 17 L47 14 L52 16 L57 15 L62 15"/></svg>
+            <span class="node-title">Machine sound</span>
+            <span class="node-sub">16 kHz mic</span>
+          </div>
+          <div class="wire"></div>
+          <div class="node fe">
+            <div class="fe-grid" aria-hidden="true" id="fe-grid"></div>
+            <span class="node-title">Front end</span>
+            <span class="node-sub">6 bands × 5 steps</span>
+          </div>
+          <div class="wire"></div>
+          <div class="analog">
+            <div class="analog-label">Analog current domain · no A/D or D/A between layers</div>
+            <div class="analog-grid" id="analog-grid">
+              <div class="conv"><span class="badge">3</span><span class="conv-name">D/A</span><span class="node-sub">× 30</span></div>
+              <!-- tiles and wires are inserted here -->
+              <div class="conv" id="adc"><span class="badge">3</span><span class="conv-name">A/D</span><span class="node-sub">× 30</span></div>
+              <div class="bracket enc">Encoder</div>
+              <div class="bracket dec">Decoder</div>
+            </div>
+          </div>
+          <div class="wire"></div>
+          <div class="node score">
+            <div class="score-box">‖x − x̂‖²</div>
+            <span class="node-title">Anomaly score</span>
+            <span class="node-sub">alarm above threshold</span>
+          </div>
+        </div>
+      </div>
+      <div class="hm-legend">
+        <span>weight code</span><span id="hm-min"></span><span class="bar" id="hm-bar"></span><span id="hm-max"></span>
+        <span class="unused" aria-hidden="true"></span><span>unused cell</span>
+      </div>
+
+    </figure>
+
+    <div class="findings needs-data">
+      <div class="fig-head">
+        <span class="eyebrow">Three findings</span>
+        <p>Most important first. The numbers mark where each one sits in the signal chain.</p>
+      </div>
+      <ol class="callouts">
+        <li><span class="badge">1</span>
+          <h3>No A/D between hidden layers holds up</h3>
+          <p>With fixed-range converters, dropping the 10 inner conversions costs nothing measurable
+            (<span class="num">+0.007 ± 0.008</span> AUC). The limit is the analog signal path: both designs fail together once read
+            noise nears 1 LSB.</p>
+          <p class="so"><span>For the chip</span>Specify signal-path noise, not converter placement.</p></li>
+        <li><span class="badge">2</span>
+          <h3>Training, not tighter programming, decides yield</h3>
+          <p>At 3 % weight-programming error, <span class="num" data-k="bad3"></span> chips trained the usual way fall below chance.
+            Trained with the chip's errors simulated, none do, and AUC stays at <span class="num" data-k="hwa3range"></span> up to 3 %.</p>
+          <p class="so"><span>For the chip</span>A 3 % program-verify tolerance is enough, if the training recipe ships with the weights.</p></li>
+        <li><span class="badge">3</span>
+          <h3>Weights need 4 bits; the converters set the floor</h3>
+          <p>4-bit weights cost <span class="num">0.010</span> AUC and 4-bit biases nothing. The D/A and A/D need 5 bits, or 4 with a
+            per-input offset subtracted before the D/A: every precision at 4 bits then scores <span class="num">0.723</span> against
+            <span class="num">0.722</span> at 6.</p>
+          <p class="so"><span>For the chip</span>4-bit cells instead of 6-bit. Converter bits hinge on one front-end feature.</p></li>
+      </ol>
+    </div>
+
+    <div class="poster-foot">
+      <span><b>Simulation only.</b> Nothing here has run on silicon.</span>
+      <span>ToyCar, DCASE 2020 Task 2 · AUC: 0.5 = coin flip, 1 = perfect</span>
+      <span class="needs-data" data-k="basis"></span>
+    </div>
+  </section>
+
+  <p class="data-missing">The data file is missing. Run <code>python scripts/export_site_data.py</code> from <code>constraint-study/</code>.</p>
+
+  <!-- ======================= Converters ======================= -->
+  <section class="section needs-data" id="converters" aria-labelledby="conv-title">
+    <div class="section-head">
+      <span class="eyebrow">Finding 1 · every simulated chip</span>
+      <h2 id="conv-title">The converters are not the limit. The noise is.</h2>
+      <p>The same 6-tile model with conversions at the two ends only, against A/D and D/A at every layer boundary. Raise the
+        signal-path read noise, given in steps of the A/D converter.</p>
+    </div>
+    <div class="plot" id="plot-adc"></div>
+  </section>
+
+  <!-- ======================= Yield ======================= -->
+  <section class="section needs-data" id="yield" aria-labelledby="yield-title">
+    <div class="section-head">
+      <span class="eyebrow">Finding 2 · every simulated chip</span>
+      <h2 id="yield-title">Every chip, not the average chip</h2>
+      <p>Each dot is one simulated chip with its own frozen device mismatch. A customer receives one chip, so the worst dot matters as
+        much as the average. Raise the weight-programming error and compare the two training recipes.</p>
+    </div>
+    <div class="plot" id="plot-prog"></div>
+  </section>
+
+  <!-- ======================= Requirements ======================= -->
+  <section class="section" id="requirements" aria-labelledby="req-title">
+    <div class="section-head">
+      <span class="eyebrow">Requirements derived in simulation</span>
+      <h2 id="req-title">What the silicon and the training must each guarantee</h2>
+      <p>AUC changes are against the 6-bit design on the same training runs; 3 to 4 training runs × 10 simulated chips per condition.</p>
+    </div>
+    <div class="spec scroll-x">
+      <table>
+        <thead><tr><th>Block</th><th>Parameter</th><th>Requirement</th><th>Measured effect</th><th>Condition</th></tr></thead>
+        <tbody>
+          <tr class="group"><td colspan="5">Silicon</td></tr>
+          <tr><td>Front end</td><td>Input features</td><td class="req">6 bands × 5 time steps</td><td class="n">+0.068 vs 30 bands × 1</td><td>fp32, 3 runs</td></tr>
+          <tr><td>Front end</td><td>Time memory</td><td class="req">Leaky integrators, τ ≤ 128 ms</td><td class="n">−0.013 ± 0.016 vs frames</td><td>On chip; τ = 512 ms is worse</td></tr>
+          <tr><td>Input D/A, output A/D</td><td>Resolution</td><td class="req">5 bits; 4 with a per-input offset</td><td class="n">0.723 vs 0.722</td><td>All of W / S / B at 4 bits, offset removed before the D/A</td></tr>
+          <tr><td>Weight array</td><td>Weight precision</td><td class="req">4 bits</td><td class="n">−0.010</td><td>S and B at 6 bits</td></tr>
+          <tr><td>Weight array</td><td>Bias precision</td><td class="req">4 bits</td><td class="n">+0.005</td><td>W and S at 6 bits</td></tr>
+          <tr><td>Weight array</td><td>Programming error σ<sub>prog</sub></td><td class="req">≤ 3 %</td><td class="n">0.714–0.735 (fp32: 0.719)</td><td>With hardware-aware training</td></tr>
+          <tr><td>Between layers</td><td>A/D converters</td><td class="req">None needed</td><td class="n">+0.007 ± 0.008</td><td>Fixed-range converters</td></tr>
+          <tr><td>Signal path</td><td>Read noise</td><td class="req">≲ 0.5 LSB if ∝ signal; ≥ 40 dB range if a fixed floor</td><td class="n">Both designs fail at ≈ 1 LSB</td><td>The lower limit for a fixed floor is not yet found</td></tr>
+          <tr><td>Test</td><td>Alarm threshold</td><td class="req">Measured on one reference chip</td><td class="n">8–13 % false alarms</td><td>On nine other chips, target 10 %; from simulation: 100 %</td></tr>
+          <tr><td>Test</td><td>Per-chip calibration</td><td class="req">Not needed</td><td class="n">+0.001 to +0.006</td><td>BN re-estimation from 1–11 min of normal sound</td></tr>
+          <tr class="group"><td colspan="5">Training</td></tr>
+          <tr><td>Training</td><td>Hardware-aware training</td><td class="req">Required</td><td class="n" data-k="hwa-row"></td><td>Weight-programming error 3 %</td></tr>
+          <tr><td>Training</td><td>Activation noise</td><td class="req">4 % during training</td><td class="n">0.646 → 0.733</td><td>On a quiet chip; a regulariser, +0.014 in plain fp32</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ======================= Questions and limits ======================= -->
+  <section class="section" id="questions" aria-labelledby="q-title">
+    <div class="section-head">
+      <span class="eyebrow">Open questions</span>
+      <h2 id="q-title">Three things only the silicon can settle</h2>
+    </div>
+    <div class="two-col">
+      <div>
+        <h3 class="col-title">Questions for the hardware team</h3>
+        <ol class="qs">
+          <li><b>Is the analog read noise a fixed floor, or proportional to the signal?</b>
+            <span>It sets the noise budget, and decides whether removing the inter-layer converters stays free (proportional noise costs 0.016).</span></li>
+          <li><b>Is subtracting a per-input offset before the D/A cheap in your front end?</b>
+            <span>It decides whether the converters can drop from 6 to 4 bits.</span></li>
+          <li><b>How many 30 × 30 arrays are on a die, and can one drive the next directly in analog?</b>
+            <span>The 6-tile design depends on it.</span></li>
+        </ol>
+      </div>
+      <div>
+        <h3 class="col-title">What this does not show</h3>
+        <ul class="limits">
+          <li><b>Simulation only.</b> Noise levels are assumptions or stress tests, not measurements of a real chip.</li>
+          <li><b>One modest benchmark.</b> At 10 % false alarms the detector catches about 37 % of ToyCar faults. The relative costs above
+            should transfer; the absolute numbers belong to this dataset.</li>
+          <li><b>Not modelled:</b> power, temperature, weight drift, gain and offset errors in the analog path, and a front end simulated
+            from the raw waveform.</li>
+          <li><b>Statistics:</b> 3 to 4 training runs per condition; differences below about 0.02 are not claimed unless consistent across runs.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <footer class="foot">
+    <nav class="links" aria-label="Documents">
+      <a data-path="REPORT.md" href="../REPORT.md">Short report</a>
+      <a data-path="docs/REPORT_full.md" href="../docs/REPORT_full.md">Full report</a>
+      <a data-path="assumptions.md" href="../assumptions.md">Every modelling assumption</a>
+      <a data-path="constraint-study" href="../constraint-study/">Code and results</a>
+    </nav>
+    <p>Version 2 corrects the bit-width finding of the 12 September report. The earlier 4-bit collapse was a bug in my quantization-aware
+      training, not a hardware limit; every quantized result was retrained on the fixed code.
+      <span class="needs-data" data-k="generated"></span></p>
+    <p class="contact">Kaiwen Lin · KaiwenLin@utexas.edu</p>
+  </footer>
+</main>
+
+<div class="tip" id="tip" role="tooltip" hidden></div>
+
+<script src="data.js"></script>
+<script>
+(() => {
+  "use strict";
+
+  // Set to "https://github.com/<user>/<repo>" once the repository is public; the links then point at GitHub.
+  const REPO_URL = "";
+
+  const D = window.SITE_DATA;
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+  const NS = "http://www.w3.org/2000/svg";
+  const svgEl = (tag, attrs, parent) => {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs || {}) e.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(e);
+    return e;
+  };
+  const tok = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const fmt = (x, d = 3) => x.toFixed(d);
+  const pct = s => `${Math.round(s * 100)} %`;
+
+  if (REPO_URL) {
+    $$("a[data-path]").forEach(a => {
+      const p = a.dataset.path;
+      a.href = `${REPO_URL}/${p.includes(".") ? "blob" : "tree"}/main/${p}`;
+    });
+  }
+  if (!D) { document.documentElement.classList.add("no-data"); return; }
+
+  // ---------- Tooltip ----------
+  const tip = $("#tip");
+  function showTip(html, ev) {
+    tip.innerHTML = html;
+    tip.hidden = false;
+    const pad = 12, r = tip.getBoundingClientRect();
+    let x = ev.clientX + pad, y = ev.clientY + pad;
+    if (x + r.width > innerWidth - 8) x = ev.clientX - r.width - pad;
+    if (y + r.height > innerHeight - 8) y = ev.clientY - r.height - pad;
+    tip.style.left = `${Math.max(8, x)}px`;
+    tip.style.top = `${Math.max(8, y)}px`;
+  }
+  const hideTip = () => { tip.hidden = true; };
+  function hover(el, html) {
+    el.addEventListener("pointerenter", e => showTip(html(), e));
+    el.addEventListener("pointermove", e => showTip(html(), e));
+    el.addEventListener("pointerleave", hideTip);
+    el.addEventListener("focus", () => {
+      const r = el.getBoundingClientRect();
+      showTip(html(), { clientX: r.right, clientY: r.bottom });
+    });
+    el.addEventListener("blur", hideTip);
+  }
+
+  // ---------- Stats ----------
+  const stats = pts => {
+    const a = pts.map(p => p[2]), n = a.length;
+    const mean = a.reduce((s, v) => s + v, 0) / n;
+    const sd = Math.sqrt(a.reduce((s, v) => s + (v - mean) ** 2, 0) / (n - 1));
+    return { n, mean, sd, min: Math.min(...a), max: Math.max(...a), below: a.filter(v => v < 0.5).length };
+  };
+
+  // ---------- Text filled from the data ----------
+  const H = D.headline, P = D.prog;
+  const margin = (H.target.auc_chip - 0.5) / (H.ref.auc - 0.5);
+  const s3 = stats(P.normal["0.03"]);
+  const text = {
+    "ref.tiles": H.ref.tiles, "target.tiles": H.target.tiles,
+    "ref.params": H.ref.params.toLocaleString("en-US"), "target.params": H.target.params.toLocaleString("en-US"),
+    "ref.auc": fmt(H.ref.auc), "target.auc_chip": fmt(H.target.auc_chip),
+    "margin": `${Math.round(margin * 100)} %`,
+    "bad3": `${s3.below} of ${s3.n}`,
+    "bad3n": s3.below, "good3n": stats(P.hwa["0.03"]).below, "n3": s3.n,
+    "target.auc_fp32": fmt(H.target.auc_fp32),
+    "shrink": fmt(H.ref.auc - H.target.auc_fp32),
+    "fp32range": `${fmt(Math.min(P.fp32, H.target.auc_fp32))}–${fmt(Math.max(P.fp32, H.target.auc_fp32))}`,
+    "hwa3range": (() => {
+      const m = P.sigmas.filter(v => v <= 0.03).map(v => stats(P.hwa[`${v}`]).mean);
+      return `${fmt(Math.min(...m))}–${fmt(Math.max(...m))}`;
+    })(),
+    "hwa-row": `Without it: ${s3.below} of ${s3.n} chips below chance`,
+    "basis": `${H.target.n_seeds} training runs × ${H.target.n_chips} simulated chips per point`,
+    "generated": `Numbers exported from the result files on ${D.generated}.`,
+  };
+  $$("[data-k]").forEach(el => { if (el.dataset.k in text) el.textContent = text[el.dataset.k]; });
+
+  // ---------- Tile budget ----------
+  const REF = [[640, 128], [128, 128], [128, 128], [128, 128], [128, 8], [8, 128], [128, 128], [128, 128], [128, 128], [128, 640]];
+  const OURS = D.tiles.map(t => [t.in, t.out]);
+  const CELL = 7, GAP = 1, LGAP = 10, T = 30;
+  const maxRows = Math.max(...REF.map(([i]) => Math.ceil(i / T)));
+  const BH = maxRows * (CELL + GAP) - GAP;
+
+  function drawBudget(svg, layers, describe) {
+    let x = 0;
+    layers.forEach(([i, o], k) => {
+      const rows = Math.ceil(i / T), cols = Math.ceil(o / T);
+      const g = svgEl("g", { class: "layer", tabindex: "0", "aria-label": describe(i, o, k, rows, cols).replace(/<[^>]+>/g, "") }, svg);
+      const h = rows * (CELL + GAP) - GAP, y0 = (BH - h) / 2;
+      for (let r = 0; r < rows; r++)
+        for (let c = 0; c < cols; c++)
+          svgEl("rect", { x: x + c * (CELL + GAP), y: y0 + r * (CELL + GAP), width: CELL, height: CELL, rx: 1 }, g);
+      hover(g, () => describe(i, o, k, rows, cols));
+      x += cols * (CELL + GAP) - GAP + LGAP;
+    });
+    const W = x - LGAP;
+    svg.setAttribute("viewBox", `0 0 ${W} ${BH}`);
+    svg.setAttribute("width", W);
+    svg.setAttribute("height", BH);
+  }
+  drawBudget($("#ref-tiles"), REF, (i, o, k, rows, cols) =>
+    `<b>Layer ${k + 1}</b> · ${i} → ${o}<br><span class="mono">${rows} × ${cols} = ${rows * cols} tiles</span>` +
+    (rows > 1 ? `<br>${rows} tiles add their currents on each output wire` : ""));
+  drawBudget($("#our-tiles"), OURS, (i, o, k) =>
+    `<b>Layer ${k + 1}</b> · ${i} → ${o}<br><span class="mono">1 tile · ${i * o} of 900 cells used</span>`);
+
+  // ---------- Signal chain: tiles with real weight codes ----------
+  const grid = $("#analog-grid"), adc = $("#adc");
+  const fe = $("#fe-grid");
+  for (let k = 0; k < 30; k++) fe.appendChild(document.createElement("span"));
+  const canvases = [];
+  D.tiles.forEach((t, k) => {
+    const w = document.createElement("div");
+    w.className = "awire";
+    if (k === 1) w.innerHTML = '<span class="badge">1</span>';
+    grid.insertBefore(w, adc);
+    const tile = document.createElement("div");
+    tile.className = "tile";
+    tile.tabIndex = 0;
+    tile.innerHTML = `${k === 0 ? '<span class="badge">2</span>' : ""}<canvas width="30" height="30"></canvas><span class="tile-label">${t.in} → ${t.out}</span>`;
+    grid.insertBefore(tile, adc);
+    canvases.push(tile.querySelector("canvas"));
+    const used = t.in * t.out;
+    const nz = t.codes.flat().filter(v => v !== 0).length;
+    hover(tile, () => `<b>Layer ${k + 1}</b> · ${t.in} → ${t.out}${k === 2 ? " (bottleneck)" : ""}<br>` +
+      `<span class="mono">${used} of 900 cells · ${nz} non-zero codes</span>`);
+  });
+  const lastWire = document.createElement("div");
+  lastWire.className = "awire";
+  grid.insertBefore(lastWire, adc);
+
+  const qmax = 2 ** (D.w_bits - 1) - 1;
+  $("#hm-min").textContent = `−${qmax}`;
+  $("#hm-max").textContent = `+${qmax}`;
+  const rgb = h => { h = h.replace("#", ""); if (h.length === 3) h = [...h].map(c => c + c).join(""); return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16)); };
+  const mix = (a, b, t) => { const A = rgb(a), B = rgb(b); return `rgb(${A.map((v, i) => Math.round(v + (B[i] - v) * t)).join(",")})`; };
+
+  function drawHeatmaps() {
+    const pos = tok("--hm-pos"), neg = tok("--hm-neg"), mid = tok("--hm-mid");
+    $("#hm-bar").style.background = `linear-gradient(90deg, ${neg}, ${mid}, ${pos})`;
+    D.tiles.forEach((t, k) => {
+      const ctx = canvases[k].getContext("2d");
+      ctx.clearRect(0, 0, T, T);
+      for (let r = 0; r < t.in; r++)          // rows: inputs (word lines)
+        for (let c = 0; c < t.out; c++) {     // columns: outputs (bit lines)
+          const v = t.codes[c][r];
+          ctx.fillStyle = mix(mid, v >= 0 ? pos : neg, Math.min(1, Math.abs(v) / qmax));
+          ctx.fillRect(c, r, 1, 1);
+        }
+    });
+  }
+
+  // ---------- Strip plots ----------
+  const XMIN = 0.25, XMAX = 0.8, ROW_H = 96, R = 5, ML = 6, MR = 6;
+
+  function lanesFor(xs) {
+    const step = 2 * R + 1.5, maxLane = Math.floor((ROW_H / 2 - R - 2) / step);
+    const offs = [0];
+    for (let k = 1; k <= maxLane; k++) offs.push(k, -k);
+    const ends = new Map(), ys = new Array(xs.length);
+    xs.map((x, i) => [x, i]).sort((a, b) => a[0] - b[0]).forEach(([x, i]) => {
+      let lane = offs.find(o => !ends.has(o) || x - ends.get(o) >= 2 * R + 1);
+      if (lane === undefined) lane = offs.reduce((a, b) => (ends.get(a) <= ends.get(b) ? a : b));
+      ends.set(lane, x);
+      ys[i] = ROW_H / 2 + lane * step;
+    });
+    return ys;
+  }
+
+  function stripPlot(root, cfg) {
+    let step = cfg.start, timer = null;
+    root.innerHTML = `
+      <div class="control">
+        <div class="control-top">
+          <label for="${cfg.id}">${cfg.controlLabel}</label>
+          <output id="${cfg.id}-out" for="${cfg.id}"></output>
+        </div>
+        <div class="slider-row">
+          <div class="slider-wrap">
+            <input type="range" id="${cfg.id}" min="0" max="${cfg.steps.length - 1}" step="1" value="${step}">
+            <div class="ticks" aria-hidden="true">${cfg.steps.map(s => `<span>${cfg.tick(s)}</span>`).join("")}</div>
+          </div>
+          <button class="play" type="button">Play sweep</button>
+        </div>
+      </div>
+      <div class="rows"></div>
+      <div>
+        <svg class="axis-svg" height="32"></svg>
+        <div class="axis-title">AUC of each simulated chip · 0.5 = coin flip, 1 = perfect</div>
+      </div>
+      <p class="note" aria-live="polite"></p>
+      <details class="numbers"><summary>Show the numbers</summary><div class="scroll-x"><table></table></div></details>`;
+    const input = $("input", root), out = $("output", root), play = $(".play", root);
+    const rowsEl = $(".rows", root), axis = $(".axis-svg", root), note = $(".note", root);
+
+    const rows = cfg.rows.map(row => {
+      const el = document.createElement("div");
+      el.className = "strip-row";
+      el.innerHTML = `<div class="strip-head"><span class="strip-label"><span class="swatch" style="background:var(${row.color})"></span>${row.label}</span><span class="strip-stat"></span></div>`;
+      const svg = svgEl("svg", { class: "strip-svg", height: ROW_H }, el);
+      rowsEl.appendChild(el);
+      const zone = svgEl("rect", { class: "zone", y: 0, height: ROW_H }, svg);
+      const chance = svgEl("line", { class: "chance", y1: 0, y2: ROW_H }, svg);
+      const ref = cfg.ref ? svgEl("line", { class: "ref", y1: 0, y2: ROW_H }, svg) : null;
+      const first = rowsEl.children.length === 1;
+      const zoneLabel = first ? svgEl("text", { class: "zone-label", y: 16 }, svg) : null;
+      if (zoneLabel) zoneLabel.textContent = "worse than guessing";
+
+      const dots = new Map();
+      for (const s of cfg.steps)
+        for (const [seed, chip] of row.data[s]) {
+          const key = `${seed}-${chip}`;
+          if (dots.has(key)) continue;
+          const c = svgEl("circle", { r: R, cx: 0, cy: 0 }, svg);
+          c.style.fill = `var(${row.color})`;
+          c.dataset.key = key;
+          dots.set(key, c);
+        }
+      return { ...row, el, svg, zone, chance, ref, zoneLabel, dots, stat: $(".strip-stat", el) };
+    });
+
+    function render(animate = true) {
+      const s = cfg.steps[step];
+      out.innerHTML = cfg.value(s);
+      input.setAttribute("aria-valuetext", cfg.value(s).replace(/<[^>]+>/g, ""));
+      const W = rowsEl.clientWidth;
+      const x = a => ML + (Math.min(XMAX, Math.max(XMIN, a)) - XMIN) / (XMAX - XMIN) * (W - ML - MR);
+      const st = {};
+      rows.forEach(row => {
+        row.svg.setAttribute("viewBox", `0 0 ${W} ${ROW_H}`);
+        row.zone.setAttribute("x", x(XMIN));
+        row.zone.setAttribute("width", x(0.5) - x(XMIN));
+        row.chance.setAttribute("x1", x(0.5)); row.chance.setAttribute("x2", x(0.5));
+        if (row.ref) { row.ref.setAttribute("x1", x(cfg.ref.at)); row.ref.setAttribute("x2", x(cfg.ref.at)); }
+        if (row.zoneLabel) row.zoneLabel.setAttribute("x", x(XMIN) + 8);
+
+        const pts = row.data[s], xs = pts.map(p => x(p[2])), ys = lanesFor(xs);
+        const seen = new Set();
+        pts.forEach((p, i) => {
+          const c = row.dots.get(`${p[0]}-${p[1]}`);
+          seen.add(c);
+          c.style.transition = animate ? "" : "none";
+          c.style.transform = `translate(${xs[i]}px, ${ys[i]}px)`;
+          c.style.opacity = 1;
+          c.__p = p;
+        });
+        row.dots.forEach(c => { if (!seen.has(c)) c.style.opacity = 0; });
+        const m = stats(pts);
+        st[row.key] = m;
+        row.stat.innerHTML =
+          `<span class="${m.below ? "bad" : "ok"}">${m.below} of ${m.n} below chance</span> · worst ${fmt(m.min)} · mean ${fmt(m.mean)}`;
+      });
+      note.innerHTML = cfg.note(s, st);
+
+      // axis
+      axis.innerHTML = "";
+      axis.setAttribute("viewBox", `0 0 ${W} 32`);
+      svgEl("line", { x1: x(XMIN), x2: x(XMAX), y1: 0.5, y2: 0.5 }, axis);
+      for (let t = 0.3; t <= XMAX + 1e-9; t += 0.1) {
+        svgEl("line", { x1: x(t), x2: x(t), y1: 0, y2: 5 }, axis);
+        const lab = svgEl("text", { x: x(t), y: 18, "text-anchor": "middle" }, axis);
+        lab.textContent = t.toFixed(1);
+      }
+      if (cfg.ref) {
+        svgEl("line", { class: "ref", x1: x(cfg.ref.at), x2: x(cfg.ref.at), y1: 0, y2: 30 }, axis);
+        const rl = svgEl("text", { x: x(cfg.ref.at) - 5, y: 29, "text-anchor": "end" }, axis);
+        rl.textContent = cfg.ref.label;
+      }
+      if (!animate) requestAnimationFrame(() => rows.forEach(r => r.dots.forEach(c => { c.style.transition = ""; })));
+    }
+
+    rows.forEach(row => row.dots.forEach(c =>
+      hover(c, () => c.__p ? `${row.label}<br><span class="mono">training run ${c.__p[0] + 1} · chip ${c.__p[1] + 1} · AUC ${fmt(c.__p[2])}</span>` : "")));
+
+    // table view
+    const tbl = $("table", root);
+    tbl.innerHTML = `<thead><tr><th>${cfg.tableHead}</th>${cfg.rows.map(r => `<th>${r.short}: mean ± sd</th><th>worst</th><th>below 0.5</th>`).join("")}</tr></thead><tbody>` +
+      cfg.steps.map(s => `<tr><td class="n">${cfg.tick(s)}</td>${cfg.rows.map(r => { const m = stats(r.data[s]); return `<td class="n">${fmt(m.mean)} ± ${fmt(m.sd)}</td><td class="n">${fmt(m.min)}</td><td class="n">${m.below} of ${m.n}</td>`; }).join("")}</tr>`).join("") +
+      "</tbody>";
+
+    input.addEventListener("input", () => { step = +input.value; stop(); render(); });
+    function stop() { if (timer) { clearInterval(timer); timer = null; play.textContent = "Play sweep"; } }
+    play.addEventListener("click", () => {
+      if (timer) return stop();
+      step = 0; input.value = 0; render();
+      play.textContent = "Stop";
+      timer = setInterval(() => {
+        if (step >= cfg.steps.length - 1) return stop();
+        step += 1; input.value = step; render();
+      }, 1500);
+    });
+    let rt = null;
+    addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => render(false), 80); });
+    render(false);
+    return { rerender: () => render(false) };
+  }
+
+  const sKey = s => `${s}`;   // matches the JSON keys written by the export script (Python "%g")
+  const pk = P.sigmas.map(sKey);
+  stripPlot($("#plot-prog"), {
+    id: "prog-step",
+    controlLabel: "Weight-programming error σ<sub>prog</sub>",
+    steps: pk,
+    start: pk.indexOf("0.03"),
+    tick: s => pct(+s),
+    value: s => `${pct(+s)}<small>per weight</small>`,
+    tableHead: "σ<sub>prog</sub>",
+    ref: { at: P.fp32, label: `ideal digital (fp32) ${fmt(P.fp32)}` },
+    rows: [
+      { key: "normal", label: "Trained the usual way, then loaded onto the chip", short: "Usual", color: "--s-base", data: P.normal },
+      { key: "hwa", label: "Trained with the chip's errors simulated", short: "Chip-aware", color: "--s-prop", data: P.hwa },
+    ],
+    note: (s, st) => {
+      const a = st.normal, b = st.hwa, ratio = a.sd / b.sd;
+      const lead = +s === 0
+        ? "Even with no programming error, read noise and 6-bit rounding push one normally trained chip to chance."
+        : `At ${pct(+s)} programming error, ${a.below} of ${a.n} normally trained chips are worse than guessing; chip-aware training leaves ${b.below}.`;
+      return `${lead} Chip-aware training makes the spread between chips ${ratio.toFixed(1)}× narrower.`;
+    },
+  });
+
+  const A = D.adc, ak = A.sigmas.map(sKey);
+  const lsbOf = s => A.lsb[ak.indexOf(s)];
+  const lsbTxt = v => (v === 0 ? "0" : v >= 1 ? v.toFixed(1) : v.toFixed(2));
+  stripPlot($("#plot-adc"), {
+    id: "adc-step",
+    controlLabel: "Signal-path read noise",
+    steps: ak,
+    start: ak.indexOf("0.08"),
+    tick: s => lsbTxt(lsbOf(s)),
+    value: s => `${lsbTxt(lsbOf(s))} LSB<small>σ<sub>read</sub> = ${pct(+s)}</small>`,
+    tableHead: "Noise (LSB)",
+    ref: null,
+    rows: [
+      { key: "per_layer", label: "A/D and D/A at every layer · 12 conversions", short: "Every layer", color: "--s-base", data: A.per_layer },
+      { key: "none", label: "No A/D between hidden layers · 2 conversions", short: "Ends only", color: "--s-prop", data: A.none },
+    ],
+    note: (s, st) => {
+      const d = st.none.mean - st.per_layer.mean, v = lsbOf(s);
+      const diff = `Removing the 10 inner conversions changes the mean AUC by ${d >= 0 ? "+" : "−"}${fmt(Math.abs(d))}.`;
+      if (v === 0) return `${diff} At zero noise the no-A/D model was also trained without activation noise, and that is what hurts it: trained with 4 % noise it reaches 0.733. Noise in training acts as a regulariser.`;
+      if (v < 0.3) return `${diff} Below half a converter step the inner converters buy almost nothing.`;
+      if (v < 0.6) return `${diff} With fixed-range converters, as real converters have, the cost is within noise (+0.007 ± 0.008).`;
+      if (v < 1.5) return `${diff} Both placements fail together near one converter step. Converters do not rescue a noisy signal path.`;
+      return `${diff} Both placements are at chance.`;
+    },
+  });
+
+  // ---------- Theme changes: recolour the canvases ----------
+  drawHeatmaps();
+  const mq = matchMedia("(prefers-color-scheme: dark)");
+  (mq.addEventListener ? mq.addEventListener.bind(mq, "change") : mq.addListener.bind(mq))(drawHeatmaps);
+  new MutationObserver(drawHeatmaps).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => dispatchEvent(new Event("resize")));
+})();
+</script>
+</body>
+</html>

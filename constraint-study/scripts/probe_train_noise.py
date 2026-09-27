@@ -38,6 +38,12 @@ N_CHIPS = 10
 
 
 def main() -> int:
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--tag", default=None, help="读带 tag 的 arch run（如 stefix），结果文件名同样加 tag")
+    args = ap.parse_args()
+    tag = f"_{args.tag}" if args.tag else ""
+
     base = load_config("configs/fast.yaml")
     device = get_device()
     results_dir = Path(base.output.results_dir)
@@ -46,7 +52,7 @@ def main() -> int:
     rows = []
     for train_sr in TRAIN_SIGMA_READS:
         for seed in SEEDS:
-            name = f"arch_none_r{train_sr:g}_d2_s{seed}"
+            name = f"arch_none_r{train_sr:g}_d2{tag}_s{seed}"
             for eval_sr in EVAL_SIGMA_READS:
                 p = DeviceParams(sigma_prog=0.03, sigma_d2d=0.02,
                                  sigma_read=eval_sr, adc_mode="none")
@@ -57,7 +63,7 @@ def main() -> int:
                           "seed": seed, **r} for r in df.to_dict("records")]
 
     runs = pd.DataFrame(rows)
-    runs.to_csv(results_dir / "train_noise_cross.csv", index=False)
+    runs.to_csv(results_dir / f"train_noise_cross{tag}.csv", index=False)
     agg = (runs.groupby(["train_sigma_read", "eval_sigma_read"])
                .auc.agg(["mean", "std", "min"]).round(4))
     print("none 架构，深度 2，σ_prog 3% / σ_d2d 2%，3 种子 × 10 芯片")

@@ -122,10 +122,39 @@ def main() -> int:
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--converge-factor", type=float, default=2.0,
                     help="final val loss 超过中位数这个倍数即判为未收敛并剔除")
+    ap.add_argument("--tag", default=None,
+                    help="加进 HWA run 名与结果文件名（如 --tag stefix）。fp32 的 C1/C2 不经过量化器，"
+                         "不受 STE 修复影响，沿用原 checkpoint")
+    ap.add_argument("--shard", default=None,
+                    help="K/N：只训练第 K 份 HWA 任务（0 起），不评估；全部分片结束后不带 --shard 再跑一次统一评估")
     args = ap.parse_args()
 
     base = load_config(args.config)
     results_dir = Path(base.output.results_dir)
+    tag = f"_{args.tag}" if args.tag else ""
+
+    def hwa_name(sig: float, seed: int) -> str:
+        return f"noise_hwa_s{sig:g}{tag}_seed{seed}"
+
+    if args.shard:
+        k, n = (int(v) for v in args.shard.split("/"))
+        jobs = [(sig, seed) for sig in args.sigmas for seed in args.seeds][k::n]
+        todo = [(sig, seed) for sig, seed in jobs
+                if args.force or not (results_dir / hwa_name(sig, seed) / "model.pt").exists()]
+        print(f"HWA 训练分片 {args.shard}：分到 {len(jobs)} 个，待训 {len(todo)} 个")
+        for i, (sig, seed) in enumerate(todo, 1):
+            name = hwa_name(sig, seed)
+            print(f"\n=== [{i}/{len(todo)}] {name} ===")
+            try:
+                train(target_cfg(base, name, seed), params=make_params(sig))
+            except Exception as exc:  # 单个任务失败不中断整个分片
+                print(f"[FAIL] {name}: {type(exc).__name__}: {exc}")
+            finally:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+        print("\n本分片训练完成。所有分片结束后不带 --shard 运行一次统一评估。")
+        return 0
+
     device = get_device()
 
     n_fp32 = len(args.seeds)
@@ -175,7 +204,7 @@ def main() -> int:
     # ---------------- C3 / C4：HWA 训练（sigma_train = sigma_eval） ----------------
     for sig in args.sigmas:
         for seed in args.seeds:
-            name = f"noise_hwa_s{sig:g}_seed{seed}"
+            name = hwa_name(sig, seed)
             hwa_names.append(name)
             p_train = make_params(sig)
             if args.force or not (results_dir / name / "model.pt").exists():
@@ -194,7 +223,7 @@ def main() -> int:
 
     # ---------------- 聚合 ----------------
     runs = pd.DataFrame(rows)
-    runs.to_csv(results_dir / "noise_runs.csv", index=False)
+    runs.to_csv(results_dir / f"noise{tag}_runs.csv", index=False)
 
     # ---- 收敛性过滤（只作用于 HWA 训练出来的 C3/C4）----
     bad = find_nonconverged(results_dir, sorted(set(hwa_names)), args.converge_factor)
@@ -217,9 +246,9 @@ def main() -> int:
                      pauc_mean=("pauc", "mean"), pauc_std=("pauc", "std"))
                 .reset_index())
     agg[["auc_std", "pauc_std"]] = agg[["auc_std", "pauc_std"]].fillna(0.0)
-    agg.to_csv(results_dir / "noise.csv", index=False)
+    agg.to_csv(results_dir / f"noise{tag}.csv", index=False)
 
-    print(f"\n{'='*96}\n结果 -> {results_dir/'noise.csv'}   (总耗时 {(time.time()-t_start)/60:.1f} 分钟)\n{'='*96}")
+    print(f"\n{'='*96}\n结果 -> {results_dir / f'noise{tag}.csv'}   (总耗时 {(time.time()-t_start)/60:.1f} 分钟)\n{'='*96}")
     show = agg.copy()
     show["AUC"] = show.apply(lambda r: f"{r.auc_mean:.4f} ± {r.auc_std:.4f}", axis=1)
     show["pAUC"] = show.apply(lambda r: f"{r.pauc_mean:.4f} ± {r.pauc_std:.4f}", axis=1)

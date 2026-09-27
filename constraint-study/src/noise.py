@@ -29,6 +29,27 @@ from dataclasses import dataclass, replace
 
 import torch
 
+SCALE_MODES = ("dynamic", "fixed")
+"""转换器（D/A、A/D）的满量程。
+
+``"dynamic"``  每个 batch 按 max-abs 重新定尺度 —— v1，物理上不对（A16），保留仅为复现 v1
+``"fixed"``    训练时按 |信号| 的 ``fs_percentile`` 分位数做滑动平均，评估时冻结；超出满量程的值被截断
+"""
+
+NOISE_MODELS = ("v1", "absolute", "proportional", "shot")
+"""信号通路读噪声（每层 MAC 输出上的加性高斯），``sigma_read`` 的含义随模型而变。
+
+``"v1"``            std = σ · mean|W·x|，按整个 batch 的平均信号 —— v1，保留仅为复现
+``"absolute"``      std = σ · U，与信号无关的噪声底
+``"proportional"``  std_i = σ · |W·x|_i，逐元素与信号成比例
+``"shot"``          std_i = σ · sqrt(U · |W·x|_i)，亚阈区 MOS 的散粒噪声（功率谱 ∝ 电流）
+
+U 是**单元满量程电流**：本 tile 的权重尺度（最大电导）× 本层输入范围。输入范围在有转换器的层
+是 D/A 满量程，在饱和激活之后的隐藏层是饱和轨，否则取 |输入| 的标定分位数。U 由硬件决定，
+网络无法靠整体缩小信号来躲开 absolute / shot 噪声 —— 这正是它们和 v1 / proportional 的区别。
+多个输入方向 tile 的部分和相加时，各 tile 的噪声独立，std 再乘 √(输入方向 tile 数)。
+"""
+
 ADC_MODES = ("every_input", "per_layer", "none")
 """层边界上 A/D、D/A 的放置方式，由 ``models.analog.apply_adc_mode`` 按层位置应用。
 
@@ -72,9 +93,21 @@ class DeviceParams:
     真正的"隐藏层无 A/D、D/A"要用 ``adc_mode="none"``。
     """
 
+    # --- v2 物理模型（默认值 = v1，保证旧结果原样复现）---
+    scale_mode: str = "dynamic"
+    """转换器满量程，取值见 ``SCALE_MODES``。"""
+    fs_percentile: float = 99.9
+    """``scale_mode="fixed"`` 时标定满量程用的分位数（%）。"""
+    noise_model: str = "v1"
+    """读噪声模型，取值见 ``NOISE_MODELS``。"""
+
     def __post_init__(self) -> None:
         if self.adc_mode not in ADC_MODES:
             raise ValueError(f"未知 adc_mode: {self.adc_mode!r}，可选 {ADC_MODES}")
+        if self.scale_mode not in SCALE_MODES:
+            raise ValueError(f"未知 scale_mode: {self.scale_mode!r}，可选 {SCALE_MODES}")
+        if self.noise_model not in NOISE_MODELS:
+            raise ValueError(f"未知 noise_model: {self.noise_model!r}，可选 {NOISE_MODELS}")
 
     @property
     def noise_free(self) -> bool:

@@ -1,218 +1,224 @@
-# Feasibility of a 30 × 30, 6-bit Analog MAC Array for Machine Acoustic Anomaly Detection
+# Machine-Sound Anomaly Detection on a 30 × 30, 6-bit Analog Chip — Short Report
 
-*Author: KaiwenLin — KaiwenLin@utexas.edu*
+*Version 2, 23 September 2026 · KaiwenLin — KaiwenLin@utexas.edu*
+*Details, tables and all four figures: [full report](docs/REPORT_full.md) (Chinese:
+[REPORT_full-zh.md](docs/REPORT_full-zh.md)). Every assumption: [assumptions.md](assumptions.md).*
 
-## Summary
-
-The MLPerf Tiny anomaly-detection reference model — ten fully connected layers, `640 → [128]×4 → 8 → [128]×4 → 640` — occupies **380 tiles** of a 30 × 30 crossbar, and one of its layers alone needs 110. My study compresses it to a **6-layer** network, `30 → [30]×2 → 4 → [30]×2 → 30`, that occupies **6 tiles** — one per layer — and evaluates it on a behavioural model of a 6-bit analog MAC array with no A/D or D/A conversion between hidden layers: 10 simulated chips, at
-least three training seeds per condition. Task: ToyCar machine-sound anomaly detection (DCASE 2020 Task 2).
-
-1. **Six tiles are enough.** On the simulated array (6-bit W/S/B, 3 % programming error, 2 % device mismatch, signal-path noise, no inter-layer A/D) the compressed model reaches **AUC 0.729 ± 0.012** —
-   level with the same network in fp32 (0.720–0.727) and about 80 % of the above-chance discrimination of the 380-tile reference (0.785 ± 0.008). Each of its six layers fits one tile, so multi-tile cascading is not on its critical path. (§2.2, §3.1)
-2. **Spend the input budget on time, not frequency.** At equal dimension, 6 mel bands × 5 frames beats 30 bands × 1 frame by **+0.068 AUC** (t = 4.2). The 30 input lines are the scarce resource, and an analog front end with configurable time constants can supply temporal context before the D/A without consuming them. (§3.1)
-3. **Hardware-aware training is mandatory, and its payoff is yield.** With it, AUC holds at 0.718–0.728 up to 3 % programming error — so a program-verify tolerance of ≈ 3 % is enough, and tighter programming only costs test time. Without it, the worst of ten simulated chips is below random from 1 %, and the chip-to-chip spread is up to 6.6× wider. (§3.2)
-4. **Removing inter-layer A/D costs ≤ 0.01 AUC while signal-path noise stays below ≈ 0.5 LSB**
-   (σ_read ≲ 8 % of the mean signal, SNR ≳ 22 dB against it). At ≈ 1 LSB both placements fail together: the binding constraint is the noise of the signal path, not where the converters sit. (§3.3)
-5. **Activation noise during training decides robustness — not the noise of the deployed chip.**
-   Without it the no-inter-layer-A/D model loses 0.073 AUC even on a perfectly quiet chip, and per-chip calibration does not recover it. The training recipe belongs in the specification alongside the weights. (§3.3, §4.2)
-6. **6-bit W/S/B is sufficient; 4-bit collapses.** 6, 8 and 10 bits are indistinguishable (0.729 / 0.727 / 0.727); 4 bits falls below chance (0.449). 5 bits was not tested, so the margin of the 6-bit specification is unknown. (§3.4)
+> **In one paragraph.** Can a small analog AI chip — a 30 × 30 grid of 6-bit weights, with no digital
+> conversion between layers — detect faulty machines by their sound? In simulation, yes: a standard detector
+> that needs 380 such grids can be shrunk to 6 and keep about 80 % of its detection ability. It only works if
+> the model is trained with the chip's imperfections simulated. Removing the converters between layers — the
+> chip's main design bet — costs almost nothing; the noise of the analog signal path is what sets the limit.
+> And the converters, not the weights, decide how many bits the chip needs. Nothing here has been tested on
+> real silicon.
 
 ---
 
-## 1. Target and task
+## The question
 
-| Constraint | Value |
-|---|---|
-| Weight array | 30 × 30 |
-| W / S / B precision | 6 bit each |
-| A/D, D/A in hidden layers | none |
-| Weight storage | in memory (EEPROM or ReRAM); weights fixed at inference |
-| Operators | fully connected, batch normalisation, scalar multiply — no convolution |
-| Operation | asynchronous, clockless, current mode |
+The chip computes one neural-network layer per 30 × 30 grid of stored weights — a *tile* — in analog
+current. Weights sit inside the memory cells, inputs arrive as currents, and the multiply-and-add happens in
+the circuit itself rather than in a processor. Between layers the signal stays analog: the published design
+avoids converting it to digital and back, which saves power and area but lets errors pass from layer to layer
+uncorrected.
 
-The absence of convolution decides the model class; the 30 × 30 array decides everything else. Both are parameters throughout the code, so every result can be recomputed for a different array (A1).
+I asked three things:
 
-**Task:** unsupervised machine-condition monitoring from sound — training on normal clips only, scoring by reconstruction error. Benchmark: the ToyCar machine type of DCASE 2020 Task 2, as used by MLPerf Tiny.
+1. **Does a useful anomaly detector fit?** The public benchmark model needs 380 tiles.
+2. **What does each hardware limit cost?** Only 30 input lines, 6-bit precision, imprecise weight
+   programming, chip-to-chip variation, analog noise, and no converters between layers.
+3. **What must the hardware guarantee, and what must the training guarantee,** so that *every* chip works —
+   not just the average one?
 
----
+## How I studied it
 
-## 2. Method
+**The task.** I started from the anomaly detector of MLPerf Tiny, the standard benchmark for small
+machine-learning devices, on toy-car recordings from the DCASE 2020 challenge. The detector is an
+autoencoder: it is trained only on healthy machines, learns to compress and rebuild their sound, and flags a
+recording it cannot rebuild well. Before changing anything I reproduced its published result.
 
-### 2.1 Reference model, data and protocol
+**Shrinking it.** The benchmark model has 10 layers; its first layer alone needs 110 tiles, because it reads
+640 input values. How a layer is split across tiles matters. Splitting the *outputs* across tiles is cheap —
+the tiles work independently. Splitting the *inputs* is not: several tiles must add their partial results on
+one wire, and each adds its own errors. So I cut the network to 6 layers of at most 30 × 30, one tile each,
+with no splitting at all. The price is input: 30 values instead of 640 — for example 6 frequency bands over
+5 moments in time.
 
-The starting point is the MLPerf Tiny anomaly-detection reference: a fully connected autoencoder `640 → [128]×4 → 8 → [128]×4 → 640` over log-mel features (128 bands, 5-frame sliding window, n_fft 1024, hop 512), with a clip scored by the mean reconstruction MSE over its windows. Being convolution-free, it maps directly onto a MAC array. Data follow the MLPerf Tiny protocol: one model trained on machine IDs 01–07 (7,000 normal clips), evaluated on IDs 01–04 (1,400 normal, 1,059 anomalous). Reproduced here at AUC 0.7804 / pAUC 0.6737 against the published 0.8009 / 0.6722 — pAUC matches to +0.0015, and the AUC gap is attributed to Keras ↔ PyTorch differences and was not chased
-(A9).
+**Simulating the chip.** A software model of the chip adds, to every layer:
 
-**Protocol.** AUC is the primary metric; pAUC (FPR ≤ 0.1) is recorded for every run and follows the same trends. Every reported number is a mean ± std over training seeds × 10 simulated chips), with at least 3 seeds per condition — single-seed results proved unreliable, with seed-to-seed std up to 0.065.
-A run whose final *validation* loss exceeds twice the median of comparable runs is excluded; test AUC never enters that filter, which removed 1 of 24, 1 of 54 and 0 of 15 runs. Sweeps use a faster training configuration, accepted only after it matched the reference on both metrics at the reference operating point (ΔAUC −0.003, ΔpAUC −0.008, 5.6× faster; A8). All values are in `constraint-study/results/*.csv`.
+- rounding of weights, signals and biases to 6 bits;
+- weight-programming error — every stored weight is a little off, and differently on every read;
+- chip-to-chip variation — a fixed error pattern that each chip carries for life;
+- noise on the analog signal between layers;
+- converters (D/A in, A/D out) only where I place them: at the two ends of the network, as in the chip, or
+  around every layer, as in conventional designs.
 
-### 2.2 Mapping the network onto tiles
+**Chip-aware training.** The usual approach trains a clean model and loads it onto the chip. The alternative,
+*hardware-aware training*, puts the simulated imperfections into training, so the model learns to tolerate
+them. I compared both.
 
-A weight matrix `[out, in]` occupies `ceil(out / 30) × ceil(in / 30)` tiles (`src/tiling.py`), but the two tiling directions are not equally cheap:
+**Measuring.** Detection quality is AUC: 0.5 is a coin flip, 1.0 is perfect. Each result is averaged over
+10 simulated chips and 3 independent trainings, and I always look at the worst chip as well as the average,
+because a customer receives one chip, not the average of ten. When comparing two designs I compare them on
+the same training runs, so that luck in training does not pass for a difference between designs.
 
-- **Output-direction tiling** splits a layer across tiles computing disjoint outputs. They do not interact; the cost is area and programming time.
-- **Input-direction tiling** splits a dot product into partial sums that must be added. In the analog domain that addition is a wire — Kirchhoff's current law — which is why crossbars are attractive. But every contributing tile adds its own mismatch and read noise to the same summing node. **Input-direction tiling is where accuracy is spent.**
+**Checking the simulator.** Finally I re-ran the key results with a more realistic chip model — converters
+with fixed ranges, an activation that saturates like real circuits, and three different kinds of analog
+noise — to see which conclusions depend on my modelling choices.
 
-The target is shallower as well as narrower than the reference — `30 → [30]×2 → 4 → [30]×2 → 30`, six fully connected layers against ten:
+## The trade-offs at a glance
 
-| Stage | Reference (10 layers) | Tiles | Target (6 layers) | Tiles |
-|---|---|---|---|---|
-| Input layer | FC 640 → 128 | **110** (5 × 22) | FC 30 → 30 | 1 |
-| Encoder blocks | 3 × FC 128 → 128 | 3 × 25 = 75 | 1 × FC 30 → 30 | 1 |
-| Into bottleneck | FC 128 → 8 | 5 | FC 30 → 4 | 1 |
-| Out of bottleneck | FC 8 → 128 | 5 | FC 4 → 30 | 1 |
-| Decoder blocks | 3 × FC 128 → 128 | 3 × 25 = 75 | 1 × FC 30 → 30 | 1 |
-| Output layer | FC 128 → 640 | **110** (22 × 5) | FC 30 → 30 | 1 |
-| **Total** | **10 layers** | **380** | **6 layers** | **6** |
-| Largest single layer | | 110 | | **1** |
-| Parameters | | 267,928 | | 4,242 |
-
-The reference model's first layer needs 22 tiles in the input direction alone: 22 partial-sum currents on every output node, each carrying its own mismatch and noise. The target model tiles in neither direction, so multi-tile cascading — the one hardware capability this study could not confirm (A7) — is not required to run it.
-
-### 2.3 Behavioural model of the array
-
-Each fully connected layer is replaced by a simulated analog layer (`src/models/analog.py`):
-
-- **Quantisation** of weights, signals and biases at 6 bits, with weight scales **per 30 × 30 tile** (weights are mapped onto each tile's conductance range). Straight-through estimator during training.
-- **Device-to-device mismatch** (σ_d2d = 2 %): a multiplicative factor per weight, drawn once per chip and frozen. Redrawn every step during training so the model cannot specialise to one chip; chips come
-  from a random stream independent of the training seeds.
-- **Programming / cycle-to-cycle error** (σ_prog): multiplicative per weight, redrawn every inference.
-- **Signal-path read noise** (σ_read): additive Gaussian on each layer's output,
-  std = σ_read · mean|W·x|. At 6 bits the measured noise-to-LSB ratio is ≈ 5.93 σ_read, so 4 / 8 / 17 / 34 % correspond to ≈ 0.24 / 0.47 / 1.0 / 2.0 LSB. This is a **stress range, not a device parameter** (A15).
-- **Converter placement**, assigned per layer by its position in the network:
-
-| Mode | Signals quantised at | Conversions on the signal path (6 layers) |
+| Trade-off | Answer | What it means for the chip |
 |---|---|---|
-| `none` | first layer's input, last layer's output | 2 |
-| `per_layer` | input and output of every layer | 12 |
-| `every_input` | input of every layer | 6 |
+| Model size vs accuracy | 380 → 6 tiles keeps ~80 % of the detection ability (AUC 0.785 → 0.72) | One small chip can host the task; no layer needs more than one tile |
+| 30 input lines: frequency detail or time context? | **Time.** 6 bands × 5 moments beat 30 bands × 1 moment by +0.07 AUC | Give a few bands a short memory; simple leaky integrators (τ ≤ ~128 ms) work |
+| Weight-programming precision vs yield | With chip-aware training, 3 % programming error costs nothing; without it, some chips do worse than a coin flip | ~3 % program-verify tolerance is enough — *if* the model is trained for the chip |
+| Converters between layers or not | Removing them costs 0 to 0.01 AUC; with realistic fixed-range converters, nothing measurable | The no-converter design holds; the limit is analog noise — 40 dB of dynamic range was still enough |
+| Bits | Weights and biases work at **4 bits**. The two converters need 5 — or 4, if each input's average level is subtracted before conversion | Cheaper weight programming (16 levels instead of 64); converter bits depend on one small front-end feature |
+| Per-chip calibration vs training recipe | Adding noise during training makes every chip robust; per-chip calibration adds almost nothing | Put the training recipe in the spec; skip per-chip calibration; set the alarm threshold on a real chip |
 
-- **Hardware-aware training (HWA):** the network is trained with the analog layers in place — quantisation and noise in every forward pass — then deployed to 10 simulated chips without retraining.
+## The findings, one by one
 
-Batch normalisation is kept as a separate affine stage, assumed to be a programmable gain and offset (A5). The hidden non-linearity is ReLU (A4).
+### 1. It fits, at a moderate cost
 
----
+The 6-tile model scores AUC 0.72 on the simulated chip, against 0.785 for the full benchmark model and 0.72
+for the same small model in ideal digital arithmetic. Measured as distance above a coin flip, it keeps about
+80 % of the full model's ability, with 63 times fewer weights. The simulated chip itself costs nothing
+measurable on top of the shrinking: the loss comes from the smaller model, not from the analog hardware.
 
-## 3. Results
+### 2. Spend the input lines on time, not on frequency detail
 
-### 3.1 What fits (Figure 1)
+With only 30 inputs, one option is 30 finely spaced frequency bands at a single moment; another is 6 coarse
+bands, each seen at 5 successive moments. The second wins clearly, by +0.07 AUC, and every option with at least
+two moments beats both single-moment options. Machine faults show up as rhythm and change — a knock, a
+wobble — more than as a static spectrum.
 
-fp32 training, 3 seeds.
+Storing past moments needs memory. A cheaper analog alternative is a *leaky integrator*: a circuit that
+remembers a smoothly fading average of its input, with a time constant τ. Replacing the 5 stored moments by 5
+integrators per band with τ between 32 and 128 ms works as well as storing frames (slightly better in ideal
+arithmetic, within noise on the simulated chip). Longer time constants, up to half a second, make it worse.
+This matters for the front end: short time constants are the cheap ones.
 
-![Figure 1](constraint-study/results/figures/fig1_dimension.png)
+### 3. Chip-aware training decides yield
 
-| | Input | Tiles (largest layer) | Parameters | AUC |
-|---|---|---|---|---|
-| Reference | 128 bands × 5 frames = 640 | 380 (110) | 267,928 | 0.7847 ± 0.0084 |
-| **Target** | 6 bands × 5 frames = 30 | **6 (1)** | **4,242** | 0.7268 ± 0.0117 |
+Weight programming is never exact. With chip-aware training, AUC holds at 0.71–0.74 for programming errors
+up to 3 %, the same as the ideal model. Without it, the *average* chip still looks acceptable — 0.62 to 0.69 —
+but the *worst* of ten chips falls below a coin flip from 1 % programming error onward (Figure 2). Chip-aware
+training narrows the spread between chips up to 6×.
 
-The target keeps 79.7 % of the reference's above-chance discrimination with 63× fewer tiles and parameters. Its six layers — 30 → 30 → 30 → 4 → 30 → 30 → 30 in activation widths — occupy one tile each. Frequency resolution costs about 0.021 AUC per halving (640 / 320 / 160 / 80 dimensions give 0.785 / 0.762 / 0.742 / 0.721).
+The practical reading: a program-verify tolerance of about 3 % is enough, and tightening it buys no accuracy
+while costing test time — but only if the model is trained for the chip. Trained the usual way, the same
+hardware would ship some chips that do not work.
 
-**How to spend 30 input lines** (hidden width 30):
+![Figure 2](constraint-study/results/figures/fig2_noise_stefix.png)
 
-| Bands × frames | 6 × 5 | 10 × 3 | 16 × 2 | 30 × 1 | 32 × 1 |
-|---|---|---|---|---|---|
-| AUC | **0.727 ± 0.012** | 0.717 ± 0.011 | 0.714 ± 0.015 | 0.659 ± 0.026 | 0.662 ± 0.022 |
+*Right panel: the worst of ten simulated chips. Trained normally (red), it falls below a coin flip once
+weight-programming error reaches 1 %. Trained with the chip's imperfections simulated (blue), it holds.*
 
-Every configuration with at least two frames scores ≥ 0.713; both single-frame configurations score ≤ 0.662. 6 × 5 versus 30 × 1 is +0.068 (pooled SE 0.016, t = 4.2). This is a statement about the front end rather than the network: the 30 input lines are the scarce resource, and they are better spent on a few bands carrying several time samples than on a finely resolved instantaneous spectrum. Envelope or leaky-integrator outputs at a handful of configurable time constants would supply that context before the D/A, without consuming input lines.
+### 4. Removing the converters between layers is nearly free
 
-### 3.2 Programming error and hardware-aware training (Figure 2)
+This is the chip's central design choice, so I compared it head-on with a conventional design that converts
+at every layer boundary — 12 conversions instead of 2. With signal noise of up to about half a converter step,
+dropping the inner converters costs about 0.01 AUC. With converters modelled realistically — a fixed range
+set once, instead of re-ranging for every batch of data as my first simulator did — the cost disappears into
+the noise.
 
-Target network, σ_d2d = 2 %, 4 seeds × 10 chips. **C1** fp32 training and inference (upper bound); **C2** fp32 training, analog inference; **C3** HWA; **C4** HWA plus a 6-bit quantisation at every layer output.
+What does matter is the noise of the analog signal path. When it grows to about one converter step, *both*
+designs fail together. So the question for the hardware is not where to place converters but how quiet the
+signal path is. How much noise is tolerable depends on its nature. If noise grows with the signal, the budget
+is about half a converter step. If it is a fixed floor, the network learns to use more of the available
+signal range to rise above it, and a dynamic range of 40 dB was still enough; the true limit is lower and I
+have not found it yet. If noise scales with each individual signal value, removing the inner converters does
+cost about 0.016 AUC. Which of these the real chip follows is the first question I would ask.
 
-![Figure 2](constraint-study/results/figures/fig2_noise.png)
+### 5. The converters, not the weights, set the bit width
 
-| σ_prog | C2 (no HWA) | C3 (HWA) | Worst chip, C2 | Worst chip, C3 |
-|---|---|---|---|---|
-| 0 % | 0.689 ± 0.069 | **0.719 ± 0.010** | 0.497 | 0.700 |
-| 1 % | 0.662 ± 0.081 | **0.728 ± 0.014** | 0.427 | 0.698 |
-| 2 % | 0.649 ± 0.093 | **0.721 ± 0.019** | 0.423 | 0.686 |
-| 3 % | 0.628 ± 0.076 | **0.718 ± 0.017** | 0.425 | 0.685 |
-| 5 % | 0.587 ± 0.072 | **0.702 ± 0.033** | 0.404 | 0.596 |
-| 10 % | 0.549 ± 0.082 | **0.644 ± 0.044** | 0.344 | 0.558 |
+Varying one precision at a time shows where the bits are needed (Figure 4). Weights work at 4 bits (−0.01
+AUC) and so do biases — 16 programmable levels per cell instead of 64, which makes programming easier. More
+than 6 bits buys nothing anywhere.
 
-C1 = 0.720 ± 0.018; C4 − C3 stays within ±0.01 everywhere.
+The two converters are the real floor: at 5 bits they cost nothing, at 4 bits detection falls to 0.57. The
+reason is simple. Sound features sit at a large constant level with small fluctuations on top — roughly
+−26 dB with a few dB of movement. A converter must cover the constant too, so at 4 bits its step is larger
+than the fluctuation it should carry. Subtracting each input's average level before the D/A converter, and
+adding it back after the output converter, shrinks the needed range 3.6 times. With that offset, 4-bit
+converters cost nothing, and a chip with 4-bit weights, biases *and* converters matches the 6-bit one
+(0.723 against 0.722). Whether that offset is cheap in the front end decides whether the converters can
+drop to 4 bits.
 
-- **Up to 3 % programming error is nearly free with HWA** (0.718–0.728 against 0.720 for fp32; read as "within about 0.01", given A16). 5 % costs about 0.017, 10 % about 0.075. Tighter programming buys no accuracy but costs programming time, which scales with weight count and therefore with test cost.
-- **The mean is the wrong number to read.** Without HWA it looks survivable at 0.63–0.69 while the worst simulated chip is below random from 1 % programming error — a part that ships at 0.43 is a returned
-  part. HWA narrows the chip-to-chip spread by up to 6.6×.
+![Figure 4](constraint-study/results/figures/fig4_bits_v2.png)
 
-*Placement note: these runs predate the `none` mode and quantise the input of every layer, so C3 sits closer to conventional in-memory compute than to the target architecture; C3 vs C4 shows only that an extra quantisation is free. Removing inter-layer conversion is tested in §3.3, and at the nominal operating point the two agree (0.718 ± 0.017 vs 0.729 ± 0.012).*
+*Left: all three precisions lowered together; the grey dashed line is version 1, before the bug fix. Right:
+one precision lowered at a time — weights (blue) and biases (purple) are fine at 4 bits; the converters
+(orange) need 5 bits, or 4 with the offset subtracted (dashed).*
 
-### 3.3 Inter-layer A/D and signal-path noise (Figure 3)
+### 6. Train with noise, skip per-chip calibration, measure the threshold on silicon
 
-Both placements, each trained with HWA under its own conditions; σ_prog = 3 %, σ_d2d = 2 %, 3 seeds ×
-10 chips. Differences are paired by seed.
+Adding a little noise to the signals during training makes the no-converter model robust on every chip —
+even on a perfectly quiet one, where the model trained without noise loses 0.09 AUC. It is not about matching
+the chip: the same trick helps a model in ideal digital arithmetic too. It is a regulariser, and it belongs in
+the specification alongside the weights.
 
-![Figure 3](constraint-study/results/figures/fig3_adc.png)
+Calibrating each chip after manufacturing — re-tuning with a minute or more of recorded normal sound — then
+adds almost nothing (+0.001 to +0.006 AUC), and it cannot rescue a model trained the wrong way. That step and
+its test time can leave the production flow.
 
-| σ_read | ≈ noise / LSB | `none` | `per_layer` | Paired difference |
-|---|---|---|---|---|
-| 0 | 0 | 0.650 ± 0.058 | 0.732 ± 0.021 | −0.082 ± 0.057 (training recipe, below) |
-| 4 % | 0.24 | 0.729 ± 0.013 | 0.726 ± 0.014 | **+0.003 ± 0.004** |
-| 8 % | 0.47 | 0.720 ± 0.010 | 0.729 ± 0.009 | **−0.010 ± 0.002** |
-| 17 % | 1.0 | 0.524 ± 0.070 | 0.574 ± 0.005 † | −0.002 ± 0.004 † |
-| 34 % | 2.0 | 0.491 ± 0.008 | 0.472 ± 0.035 | +0.019 ± 0.039 |
+A deployed detector also needs an alarm threshold. Set in simulation, it fails on real chips: chip noise
+raises every score by about 1.8×, so a simulated threshold flags everything. Set on one reference chip, the
+same threshold works on the other nine, holding the false-alarm rate near its 10 % target. With the input
+offset from finding 5, the shift almost disappears.
 
-† One `per_layer` run removed by the convergence filter; 2 seeds.
+## Does the simulator itself matter?
 
-**Below ≈ 0.5 LSB, removing the inter-layer converters costs at most 0.01 AUC.** An inter-layer A/D does regenerate part of the noise — visible at 0.47 LSB — and the effect grows with depth (paired difference −0.002 / −0.010 / −0.016 at 1 / 2 / 4 blocks, with depth confounded by parameter count). At ≈ 1 LSB both placements fail together, and at 2 LSB both are at chance. **What sets the limit is the noise of the signal path, not the placement of the converters**, and the transition is not gentle: between 0.47 and 1.0 LSB, AUC falls from 0.72 to 0.52.
+Every conclusion above rests on a model of the chip, so I changed the model and re-ran the key results:
 
-That gives the trade a price on both sides. Published component-level figures for ultra-low-power analog blocks put an A/D converter near 1 µA against roughly 150 nA for an amplifier stage; a six-layer network converting at every boundary carries ten more conversions than one converting only at its input and output. **This study models no power and claims none** — it bounds the accuracy side of that trade at ≤ 0.01 AUC, conditional on the noise budget above and on the training recipe below.
+- **Converter ranges fixed once, as in real hardware**, instead of re-ranged for every batch: the
+  no-converter design is unchanged; the conventional design loses a little, because part of its advantage came
+  from the unrealistic re-ranging.
+- **A saturating activation**, like a current mirror limited by its bias, or like a differential pair,
+  instead of the ideal ReLU: no measurable difference.
+- **Three kinds of analog noise** — a fixed floor, noise proportional to each signal, and shot noise that
+  grows with the square root of the current: the conclusions hold under all three, except that noise
+  proportional to each signal costs about 0.02 AUC and makes removing the inner converters cost 0.016.
 
-**The training recipe.** At σ_read = 0 all three `none` models are weak (0.597, 0.677, 0.675) with 3–6× the chip-to-chip spread they show at 4 %. Evaluation batching (≤ 0.0008) and batch-norm statistics (§4.2) each explain little of it. A cross-evaluation settles the question:
+So the conclusions do not hinge on the modelling choices I was least sure of — with one exception, the kind of
+analog noise, which only a measurement on the chip can settle.
 
-| Trained at σ_read (rows) · deployed at σ_read (columns) | 0 (quiet chip) | 4 % |
-|---|---|---|
-| 0 | 0.665 ± 0.042 | 0.657 ± 0.051 |
-| 4 % | **0.738 ± 0.014** | 0.726 ± 0.012 |
+## What the ML side hands to the hardware side
 
-**Activation noise during training, not the noise of the deployed chip, decides robustness.** A model trained with ≈ 0.24 LSB of activation noise is robust even on a perfectly quiet chip; one trained without it is fragile everywhere. `per_layer` does not need the step, plausibly because inter-layer quantisation supplies the same perturbation during training — the mechanism is not established. §3.4 reproduces the effect independently.
+For the 6-tile model the whole hand-off fits on a page: the tile map (one layer per tile); 4,242 weight and
+bias codes; one scale per tile; a gain and offset per channel for the normalisation step; the fixed ranges
+of the two converters, plus the per-input offsets if the converters are to drop to 4 bits; the alarm
+threshold, measured on a reference chip; and the noise levels the model was trained against. That last item
+is easy to leave out of a weights file and expensive to rediscover: a model is only valid on chips no noisier
+than it was trained for.
 
-### 3.4 Bit width (Figure 4)
+## What I got wrong, and fixed
 
-`none` placement trained with 4 % activation noise (A17); W / S / B varied jointly with QAT at each width; 3 seeds × 10 chips. *Nominal* matches training (σ_prog 3 %, σ_d2d 2 %, σ_read 4 %); *quantisation only* disables all noise.
+Version 1 of this report (12 September) said 4-bit precision fails completely. That was a bug in my own
+training code: values at the top of the 4-bit range received no learning signal, so those models never
+trained. I found it while investigating why the 4-bit result looked so strange, fixed it, added tests that
+catch it, and retrained every affected result (114 training runs). Only that finding was wrong. One other —
+the cost of removing inner converters — needed its numbers restated, from "at most 0.01" to "about 0.01".
+The rest stood.
 
-![Figure 4](constraint-study/results/figures/fig4_bits.png)
+## What this does not show
 
-| Bits | 2 | 4 | **6 (chip)** | 8 | 10 |
-|---|---|---|---|---|---|
-| Nominal | 0.538 ± 0.073 | 0.449 ± 0.005 | **0.729 ± 0.012** | 0.727 ± 0.013 | 0.727 ± 0.012 |
-| Quantisation only | 0.593 ± 0.074 | 0.452 ± 0.001 | **0.738 ± 0.012** | 0.739 ± 0.012 | 0.740 ± 0.005 |
+- **It is simulation only.** Noise levels are assumptions or stress tests, not measurements of the real chip.
+- **One benchmark, and a modest one.** At the 10 % false-alarm rate the detector catches about 37 % of faults;
+  if one recording in ten is faulty, about 30 % of alarms are real. Those absolute numbers belong to toy-car
+  sounds at AUC 0.72, not to the chip — the *relative* costs above are what should transfer. Industrial
+  recordings (MIMII) would be a stronger test.
+- **Not modelled:** power, temperature, long-term drift of stored weights, gain or offset errors in the analog
+  path, and a front end simulated from the raw waveform.
+- **Statistics:** three trainings per condition; differences below about 0.02 are not claimed unless they
+  are consistent across trainings.
 
-- **6 bits is sufficient and 4 bits fails.** 8 and 10 bits differ from 6 by −0.002 and +0.001; more
-  resolution on W, S or B buys nothing on this task. At 4 bits the model collapses below chance with near-identical results across seeds (std ≤ 0.005) — a systematic degenerate solution that reconstructs anomalous clips *better* than normal ones. The cliff is somewhere between 4 and 6 bits; 5 bits was not tested, so the margin of the 6-bit specification is unknown.
-- **Independent reproduction of the training recipe.** An earlier run of this sweep, trained without activation noise, gave 0.654 / 0.642 / 0.664 at 6 / 8 / 10 bits — 0.06–0.085 lower, with about 4× the spread.
+## What I would ask the hardware team
 
----
-
-## 4. Handoff and per-chip calibration
-
-### 4.1 What the ML side delivers
-
-For the target model the artefact is small enough to print:
-
-| Item | Content |
-|---|---|
-| Tile map | 6 tiles, one per layer; no tile shared, no partial sums |
-| Weight and bias codes | 6-bit signed integers, 4,242 weights |
-| Tile scales | one real-valued scale per tile — a property of the tile's conductance range, not of the layer |
-| BN gain and offset | one pair per channel, real-valued; assumed programmable (A5) |
-| D/A and A/D full scale | input and output ranges. Currently a dynamic per-batch scale; a **fixed calibrated range** is required before this is a specification (A16) |
-| Decision threshold | operating point on the reconstruction-MSE score, set from normal data at the target false-positive rate |
-| Training conditions | the σ_prog, σ_d2d and activation-noise levels the model was trained under |
-
-The last row is the one easily left out of a weights file and expensive to rediscover: a model is only valid for chips whose non-idealities are no worse than those it was trained against, and without those numbers a changed process cannot be checked against an existing model.
-
-### 4.2 Whether per-chip calibration is worth its test time
-
-Batch normalisation is the natural calibration handle. Re-estimating its statistics per chip on normal audio was measured directly (`scripts/probe_bn_calib.py`, 3 seeds × 10 chips); window counts are given with the equivalent length of a continuous recording:
-
-| Model | No calibration | 2,048 windows (≈ 1 min) | 20,480 windows (≈ 11 min) |
-|---|---|---|---|
-| `none`, trained with 4 % activation noise | **0.731 ± 0.013** | 0.728 ± 0.017 | 0.731 ± 0.016 |
-| `none`, trained without it | 0.648 ± 0.056 | 0.649 ± 0.050 | 0.670 ± 0.042 |
-| `per_layer`, σ_read 0 | 0.732 ± 0.017 | 0.727 ± 0.016 | 0.731 ± 0.017 |
-
-- **With the right training recipe, per-chip calibration buys nothing** (≤ 0.003 either way) — a per-chip step and its audio-capture time can come out of the production flow.
-- **Calibration is not a substitute for the recipe.** For the fragile model, eleven minutes of audio per chip recovers 0.022 of a 0.083 gap and leaves its worst chip at 0.588.
+1. **Is the analog read noise a fixed floor, or proportional to the signal?** It decides the noise budget and
+   whether removing inter-layer converters stays free.
+2. **Is subtracting a per-input offset before the D/A cheap in your front end?** It decides whether the
+   converters can drop from 6 to 4 bits.
+3. **How many 30 × 30 arrays are on a die, and can one drive the next directly in analog?** The 6-tile design
+   depends on it.

@@ -126,6 +126,15 @@ def train(cfg, params: "DeviceParams | None" = None) -> dict:
 
     # ---------------- 模型 ----------------
     model = build_from_config(cfg, input_dim=store.dim)
+    if model.center:
+        # D/A 前的逐维偏置：只用训练窗口的均值，不碰验证集和测试集
+        with torch.no_grad():
+            acc = torch.zeros(store.dim, dtype=torch.float64, device=device)
+            for i in range(0, len(train_idx), 65536):
+                acc += store.gather(train_idx[i : i + 65536]).double().sum(0)
+            model.set_input_offset((acc / len(train_idx)).float().cpu())
+        off = model.input_offset
+        print(f"[center] D/A 前减去训练集逐维均值：[{off.min():.1f}, {off.max():.1f}]")
     if params is not None:
         analogize(model, params)
         print(f"[model] HWA 训练: W/S/B={params.w_bits}/{params.s_bits}/{params.b_bits}bit, "
@@ -138,6 +147,10 @@ def train(cfg, params: "DeviceParams | None" = None) -> dict:
 
     bs = int(cfg.train.batch_size)
     epochs = int(cfg.train.epochs)
+    # 去噪自编码器对照（NEXT-STEPS 0-2）：只给训练输入加高斯噪声，重构目标与验证集保持干净
+    input_noise = float(cfg.train.get("input_noise", 0.0))
+    if input_noise > 0:
+        print(f"[train] 输入噪声 std = {input_noise:g}（仅训练输入；目标与验证集干净）")
     history: list[dict] = []
     t0 = time.time()
 
@@ -147,7 +160,8 @@ def train(cfg, params: "DeviceParams | None" = None) -> dict:
         tot, nb = 0.0, 0
         for i in range(0, len(order), bs):
             x = store.gather(order[i : i + bs])
-            loss = F.mse_loss(model(x), x)
+            x_in = x + torch.randn_like(x) * input_noise if input_noise > 0 else x
+            loss = F.mse_loss(model(x_in), x)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()

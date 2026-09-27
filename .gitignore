@@ -1,5 +1,12 @@
-# Private working notes (Chinese): research plan, roadmap, Q&A, progress report
-docs/
+# Private working notes (Chinese): research plan, roadmap, Q&A, progress report.
+# Only the reports that README.md and REPORT.md link to are published.
+docs/*
+!docs/REPORT_full.md
+!docs/REPORT_full-zh.md
+!docs/REPORT_sent.md
 
 # Local Claude Code settings
 .claude/
+
+# Build artefact: self-contained render of REPORT.md (figures + assumptions embedded)
+REPORT.html

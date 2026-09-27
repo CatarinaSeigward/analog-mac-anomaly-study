@@ -1,6 +1,7 @@
 
-data/
-cache/
+# Anchored: an unanchored "data/" would also drop the source package src/data/
+/data/
+/cache/
 #只忽略 checkpoint；图和汇总 CSV 要入库，README / REPORT 里的图片才能显示
 results/*
 !results/figures/

@@ -34,7 +34,12 @@ import torch.nn.functional as F
 
 from ..noise import ADC_MODES, DeviceParams, chip_generator, sample_d2d
 from ..tiling import layer_tiles
-from .quant import LSQQuantizer, quantize_ste, quantize_weight_per_tile
+from .quant import LSQQuantizer, per_tile_absmax, qmax_of, quantize_ste, quantize_weight_per_tile
+
+FS_MOMENTUM = 0.05
+"""满量程标定的滑动平均系数（每个训练步）。约 60 步记忆，远短于一个 epoch 的约 520 步。"""
+
+_FS_BUFFERS = ("in_fs", "out_fs")
 
 
 class AnalogLinear(nn.Module):
@@ -84,6 +89,20 @@ class AnalogLinear(nn.Module):
         # LSQ 只用于激活；权重走 per-tile 静态尺度（更贴近电导映射的物理约束）
         self.act_q = LSQQuantizer(self.params.s_bits) if use_lsq else None
 
+        # v2：转换器满量程与本层输入范围（0 = 未标定）。训练时按 |信号| 的分位数滑动平均，
+        # 评估时冻结；随 checkpoint 保存 —— 它们就是交给硬件的 D/A、A/D 满量程。
+        # 只有 scale_mode="fixed" 或 noise_model 需要单元满量程时才跟踪，v1 路径完全不动。
+        self.register_buffer("in_fs", torch.zeros(()))
+        self.register_buffer("out_fs", torch.zeros(()))
+        # 饱和激活之后的隐藏层：输入范围就是饱和轨（由 apply_signal_ranges 设置），不用标定值
+        self.in_range_fixed: float | None = None
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        # v2 之前的 checkpoint（以及 fp32 的 nn.Linear）没有满量程 buffer：按"未标定"补上
+        for name in _FS_BUFFERS:
+            state_dict.setdefault(prefix + name, getattr(self, name).detach().clone())
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+
     # ------------------------------------------------------------------
     # 芯片状态
     # ------------------------------------------------------------------
@@ -130,12 +149,79 @@ class AnalogLinear(nn.Module):
             w = w * (1.0 - p.drift)
         return w
 
+    # ------------------------------------------------------------------
+    # v2：满量程标定与单元满量程电流
+    # ------------------------------------------------------------------
+    @property
+    def _tracks_ranges(self) -> bool:
+        p = self.params
+        return p.scale_mode == "fixed" or p.noise_model in ("absolute", "shot")
+
+    def _track(self, buf: torch.Tensor, t: torch.Tensor) -> None:
+        """训练时把 |t| 的分位数滑动平均进 ``buf``。
+
+        只在训练且需要梯度时更新：BN 重标定（``no_grad`` 下的 train 模式）和评估都不改满量程。
+        ⚠️ 条件必须在进入 no_grad 之前判断，否则 is_grad_enabled() 恒为 False。
+        """
+        if not (self.training and torch.is_grad_enabled()):
+            return
+        with torch.no_grad():
+            q = torch.quantile(t.detach().abs().flatten().float(), self.params.fs_percentile / 100.0)
+            # 首次直接取 q，之后滑动平均。用 torch.where 在设备上判断：训练热路径里不能有
+            # float(buf) 之类的 GPU→CPU 同步，否则每层每步都打断异步流水线（实测去掉后快约 14 %）
+            buf.copy_(torch.where(buf == 0, q, buf * (1.0 - FS_MOMENTUM) + FS_MOMENTUM * q))
+
+    def _fixed_scale(self, buf: torch.Tensor, what: str) -> torch.Tensor:
+        # 训练时每步先 _track 再使用，一定已标定；只在评估时检查（会同步一次，评估不在乎）
+        if not self.training and float(buf) <= 0.0:
+            raise RuntimeError(f"scale_mode='fixed' 但 {what} 未标定（为 0）：模型需要在 fixed 模式下训练过")
+        return buf / qmax_of(self.params.s_bits)
+
+    def cell_full_scale(self) -> torch.Tensor:
+        """单元满量程电流 U = 权重尺度（本 tile 的最大 |w|）× 本层输入范围，模型单位。
+
+        输入范围：输入经过 D/A 的层取 D/A 满量程；否则饱和激活之后取饱和轨；再否则取标定分位数。
+        """
+        has_da = self.quantize_input and self.params.s_bits > 0
+        if has_da or self.in_range_fixed is None:
+            x_range = self.in_fs              # D/A 满量程，或（不饱和时）标定分位数；训练时每步先标定
+        else:
+            x_range = self.in_range_fixed
+        if not self.training and float(x_range) <= 0.0:    # 同 _fixed_scale：只在评估时检查
+            raise RuntimeError("absolute / shot 噪声需要本层输入范围：模型需要在对应模式下训练过")
+        w_scale = per_tile_absmax(self.weight.detach(), self.params.tile).mean()
+        return w_scale * x_range
+
+    def _read_noise(self, y: torch.Tensor, signal: torch.Tensor) -> torch.Tensor:
+        p = self.params
+        if p.noise_model == "v1":
+            ref = signal.detach().abs().mean().clamp(min=1e-12)
+            return y + torch.randn_like(y) * (p.sigma_read * ref)
+        if p.noise_model == "proportional":
+            return y + torch.randn_like(y) * (p.sigma_read * signal.detach().abs())
+        u = self.cell_full_scale()
+        k_in = -(-self.in_features // p.tile)          # 输入方向 tile 数：各自的噪声独立相加
+        if p.noise_model == "absolute":
+            std = p.sigma_read * u * k_in ** 0.5
+        else:  # shot
+            std = p.sigma_read * torch.sqrt(u * signal.detach().abs()) * k_in ** 0.5
+        return y + torch.randn_like(y) * std
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         p = self.params
+        track = self._tracks_ranges
+        fixed = p.scale_mode == "fixed"
 
         # 1) 输入 D/A（S）—— 只有 quantize_input 的层才量化
+        if track:
+            self._track(self.in_fs, x)
         if self.quantize_input:
-            x = self.act_q(x) if self.act_q is not None else quantize_ste(x, p.s_bits)
+            if self.act_q is not None:
+                x = self.act_q(x)
+            elif fixed and p.s_bits > 0:
+                x = quantize_ste(x, p.s_bits, self._fixed_scale(self.in_fs, "输入 D/A 满量程"))
+            else:
+                x = quantize_ste(x, p.s_bits)
 
         # 2) 权重（含 D2D / 编程噪声）
         w = self.effective_weight()
@@ -145,20 +231,24 @@ class AnalogLinear(nn.Module):
 
         y = F.linear(x, w, b)
 
-        # 4) 读噪声：加性，按本层信号量级 mean|W·x|（不含偏置）归一
+        # 4) 读噪声：加在 MAC 输出上；信号量级按 W·x（不含偏置）计，模型见 noise.NOISE_MODELS
         if p.sigma_read > 0:
             signal = y - b if b is not None else y
-            ref = signal.detach().abs().mean().clamp(min=1e-12)
-            y = y + torch.randn_like(y) * (p.sigma_read * ref)
+            y = self._read_noise(y, signal)
 
-        # 5) 动态范围饱和
+        # 5) 动态范围饱和（BN 之前的列电流裁剪；v2 的饱和改在激活函数上建模，见 autoencoder）
         if p.clip > 0:
             y = torch.clamp(y, -p.clip, p.clip)
 
         # 6) 输出 A/D —— 由 apply_adc_mode 设置；未设置时沿用 Day 3 的开关
         q_out = p.requantize_output if self.quantize_output is None else self.quantize_output
         if q_out:
-            y = quantize_ste(y, p.s_bits)
+            if track:
+                self._track(self.out_fs, y)
+            if fixed and p.s_bits > 0:
+                y = quantize_ste(y, p.s_bits, self._fixed_scale(self.out_fs, "输出 A/D 满量程"))
+            else:
+                y = quantize_ste(y, p.s_bits)
         return y
 
     def extra_repr(self) -> str:
@@ -196,6 +286,17 @@ def apply_adc_mode(model: nn.Module, mode: str) -> None:
             layer.quantize_input, layer.quantize_output = (i == 0), (i == last)
 
 
+def apply_signal_ranges(model: nn.Module) -> None:
+    """饱和激活之后的隐藏层：输入范围固定为饱和轨（``model.act_rail``），供单元满量程 U 使用。
+
+    ReLU（v1）不饱和，``act_rail`` 为 None，输入范围取标定分位数。第一层的输入来自 D/A，
+    范围是 D/A 满量程。假设第 i > 0 层的输入就是上一个块的激活输出 —— 对 DenseAutoEncoder 成立。
+    """
+    rail = getattr(model, "act_rail", None)
+    for i, layer in enumerate(analog_layers(model)):
+        layer.in_range_fixed = rail if (rail is not None and i > 0) else None
+
+
 def set_chip(model: nn.Module, chip_id: int | None) -> None:
     """把整个模型里所有 AnalogLinear 切到同一颗仿真芯片。"""
     for m in analog_layers(model):
@@ -207,6 +308,7 @@ def set_params(model: nn.Module, params: DeviceParams) -> None:
     for m in analog_layers(model):
         m.params = params
     apply_adc_mode(model, params.adc_mode)
+    apply_signal_ranges(model)
 
 
 def count_tiles(model: nn.Module) -> int:
@@ -232,4 +334,5 @@ def analogize(model: nn.Module, params: DeviceParams) -> nn.Module:
     并按 ``params.adc_mode`` 放置 A/D、D/A。"""
     _replace_linear(model, params)
     apply_adc_mode(model, params.adc_mode)
+    apply_signal_ranges(model)
     return model
